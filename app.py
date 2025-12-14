@@ -8,7 +8,7 @@ import random
 
 # --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="QUANT_PARLAY_ENGINE_V14", 
+    page_title="QUANT_PARLAY_ENGINE_V16", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -36,6 +36,7 @@ st.markdown("""
         background-color: #00ff41; color: #000000; box-shadow: 0 0 10px #00ff41;
     }
     section[data-testid="stSidebar"] { background-color: #111; border-right: 1px solid #333; }
+    
     /* Tabs Styling */
     .stTabs [data-baseweb="tab-list"] { gap: 10px; }
     .stTabs [data-baseweb="tab"] {
@@ -113,6 +114,9 @@ if 'input_data' not in st.session_state:
     
 if 'generated_parlays' not in st.session_state:
     st.session_state.generated_parlays = []
+    
+if 'portfolio_state' not in st.session_state:
+    st.session_state.portfolio_state = pd.DataFrame()
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -186,16 +190,15 @@ with st.sidebar:
     max_combos = st.select_slider("MAX_ITERATIONS", options=[1000, 5000, 10000], value=5000)
 
 # --- MAIN APP LAYOUT ---
-st.title("> QUANT_PARLAY_ENGINE_V14")
+st.title("> QUANT_PARLAY_ENGINE_V16")
 
 # --- TABS SYSTEM ---
-tab_build, tab_hedge, tab_analysis = st.tabs(["🏗️ BUILDER", "🛡️ HEDGE_CALC", "📊 ANALYSIS"])
+tab_build, tab_scenarios, tab_hedge, tab_analysis = st.tabs(["🏗️ BUILDER", "🧪 SCENARIOS", "🛡️ HEDGE_CALC", "📊 ANALYSIS"])
 
 # ==========================================
-# TAB 1: BUILDER (The Main Engine)
+# TAB 1: BUILDER
 # ==========================================
 with tab_build:
-    # --- PROP BUILDER ---
     with st.expander("➕ OPEN_PROP_BUILDER (Click to Add Custom Bets)"):
         st.markdown("`>> MANUAL_OVERRIDE_PROTOCOL`")
         c1, c2, c3, c4, c5 = st.columns([2, 1, 1, 1, 1])
@@ -216,7 +219,6 @@ with tab_build:
                 st.success(f"ADDED: {new_prop_name}")
                 st.rerun()
 
-    # --- CLONE TOOL ---
     col_clone, col_spacer = st.columns([1, 4])
     with col_clone:
         if st.button("👯 CLONE_SELECTED_ROWS"):
@@ -227,7 +229,6 @@ with tab_build:
                 st.success(f"CLONED {len(rows_to_clone)} ROWS")
                 st.rerun()
 
-    # --- MAIN TABLE ---
     edited_df = st.data_editor(
         st.session_state.input_data, 
         column_config={
@@ -252,7 +253,6 @@ with tab_build:
         st.info("TABLE_EMPTY")
         st.stop()
 
-    # --- EXECUTION ---
     st.write("") 
     if st.button(">>> GENERATE_OPTIMIZED_HEDGE"):
         if active_df.empty:
@@ -269,7 +269,6 @@ with tab_build:
                 for r in range(min_legs, max_legs + 1):
                     if stop_execution: break
                     for combo in itertools.combinations(legs_list, r):
-                        # Logic Checks
                         excl_groups = [str(x['Excl Group']) for x in combo if str(x['Excl Group']).strip()]
                         if len(excl_groups) != len(set(excl_groups)): continue
 
@@ -295,6 +294,7 @@ with tab_build:
                         ev = (final_win_prob * payout) - ((1 - final_win_prob) * wager)
 
                         valid_parlays.append({
+                            "BET?": True, # DEFAULT ALL TO TRUE
                             "LEGS": [l['Leg Name'] for l in combo],
                             "ODDS": dec_total,
                             "PROB": final_win_prob * 100,
@@ -308,115 +308,61 @@ with tab_build:
             st.session_state.generated_parlays = valid_parlays
             st.rerun()
 
-    # --- DISPLAY ---
+    # --- RESULTS DISPLAY (NOW EDITABLE) ---
     if len(st.session_state.generated_parlays) > 0:
         st.divider()
-        results = pd.DataFrame(st.session_state.generated_parlays)
-        c1, c2 = st.columns([2, 1])
-        with c1:
-            st.markdown("`>> STRATEGY_TABLE`")
-            sort_by = st.selectbox("SORT_BY", ["EV", "WAGER", "PAYOUT", "PROB"], label_visibility="collapsed")
-            results_sorted = results.sort_values(by=sort_by, ascending=False)
-            
-            display = results_sorted.copy()
-            display['LEGS'] = display['LEGS'].apply(lambda x: " + ".join(x))
-            display['WAGER'] = display['WAGER'].apply(format_money)
-            display['PAYOUT'] = display['PAYOUT'].apply(format_money)
-            display['EV'] = display['EV'].apply(format_money)
-            display['ODDS'] = display['ODDS'].apply(lambda x: f"{x:.2f}x")
-            display['PROB'] = display['PROB'].apply(lambda x: f"{x:.1f}%")
-            st.dataframe(display.drop(columns=['RAW_LEGS_DATA']), use_container_width=True, hide_index=True)
-
-        with c2:
-            st.metric("TOTAL_RISK", format_money(results['WAGER'].sum()))
-            st.metric("TOTAL_EXP_VALUE", format_money(results['EV'].sum()))
-
-# ==========================================
-# TAB 2: HEDGE CALCULATOR (NEW)
-# ==========================================
-with tab_hedge:
-    st.header("🛡️ EXIT_STRATEGY_CALCULATOR")
-    st.caption("Calculate how much to bet on the opponent to guarantee profit on a pending parlay.")
-    
-    col_h1, col_h2 = st.columns(2)
-    with col_h1:
-        current_payout = st.number_input("Potential Parlay Payout ($)", value=1000.0)
-        current_wager = st.number_input("Original Wager Cost ($)", value=50.0)
-    with col_h2:
-        hedge_odds = st.number_input("Hedge Odds (Opponent ML)", value=150)
-        hedge_decimal = american_to_decimal(hedge_odds)
-        st.metric("Hedge Decimal Odds", f"{hedge_decimal:.2f}")
-
-    st.divider()
-    
-    # Hedge Math
-    # To secure equal profit: Hedge_Bet = Payout / Hedge_Decimal
-    optimal_hedge = current_payout / hedge_decimal
-    guaranteed_profit = current_payout - optimal_hedge - current_wager
-    
-    if st.button("CALCULATE_OPTIMAL_HEDGE"):
-        c_res1, c_res2, c_res3 = st.columns(3)
-        c_res1.metric("HEDGE_BET_AMOUNT", format_money(optimal_hedge))
-        c_res2.metric("GUARANTEED_PROFIT", format_money(guaranteed_profit), delta="Risk Free")
+        st.markdown("### 📋 GENERATED_PORTFOLIO (Check box to include in Analysis)")
         
-        # Scenarios
-        st.subheader("Outcome Scenarios")
-        st.write(f"**If Original Parlay Wins:** ${current_payout} (Payout) - ${optimal_hedge:.2f} (Hedge Cost) - ${current_wager} (Original) = **${guaranteed_profit:.2f} Profit**")
-        st.write(f"**If Hedge Wins:** ${optimal_hedge * hedge_decimal:.2f} (Hedge Payout) - ${optimal_hedge:.2f} (Hedge Cost) - ${current_wager} (Original) = **${guaranteed_profit:.2f} Profit**")
-
-# ==========================================
-# TAB 3: ANALYSIS (Alpha Hunter & Sim)
-# ==========================================
-with tab_analysis:
-    st.header("📊 MARKET_INTELLIGENCE")
-    
-    if not st.session_state.input_data.empty:
-        plot_data = st.session_state.input_data.copy()
-        plot_data['Active'] = plot_data['Active'].astype(bool)
-        plot_data = plot_data[plot_data['Active'] == True]
+        # Convert list to DF
+        results_df = pd.DataFrame(st.session_state.generated_parlays)
         
-        if not plot_data.empty:
-            plot_data['Decimal'] = plot_data['Odds'].apply(american_to_decimal)
-            plot_data['Implied_Prob'] = (1 / plot_data['Decimal']) * 100
-            plot_data['My_Prob'] = plot_data['Conf (1-10)'] * 10
-            plot_data['Edge'] = plot_data['My_Prob'] - plot_data['Implied_Prob']
-            plot_data['Color'] = plot_data['Edge'].apply(lambda x: '#00ff41' if x > 0 else '#ff4b4b')
-            
-            c = alt.Chart(plot_data).mark_circle(size=100).encode(
-                x=alt.X('Implied_Prob', title='Bookmaker Implied Prob (%)', scale=alt.Scale(domain=[0, 100])),
-                y=alt.Y('My_Prob', title='My Confidence (%)', scale=alt.Scale(domain=[0, 100])),
-                color=alt.Color('Color', scale=None),
-                tooltip=['Leg Name', 'Odds', 'Edge']
-            )
-            line = alt.Chart(pd.DataFrame({'x': [0, 100], 'y': [0, 100]})).mark_line(
-                color='#666', strokeDash=[5, 5]
-            ).encode(x='x', y='y')
-            
-            final_chart = (c + line).properties(title="Alpha Hunter", height=400, background='transparent').interactive()
-            st.altair_chart(final_chart, use_container_width=True)
+        # We need to sort it initially, but if we just sort the DF, it might mess up the editor state
+        # So we usually just display it.
+        
+        # Prepare for Editor
+        display_df = results_df.copy()
+        display_df['LEGS'] = display_df['LEGS'].apply(lambda x: " + ".join(x))
+        
+        # EDITABLE DATAFRAME FOR SELECTION
+        portfolio_edits = st.data_editor(
+            display_df,
+            column_config={
+                "BET?": st.column_config.CheckboxColumn("PLACED?", help="Only checked rows are used in Scenarios/Sims"),
+                "LEGS": st.column_config.TextColumn("PARLAY LEGS", width="large"),
+                "WAGER": st.column_config.NumberColumn("KELLY ($)", format="$%.2f"),
+                "PAYOUT": st.column_config.NumberColumn("PAYOUT ($)", format="$%.2f"),
+                "EV": st.column_config.NumberColumn("EV ($)", format="$%.2f"),
+                "ODDS": st.column_config.NumberColumn("DEC ODDS", format="%.2f"),
+                "PROB": st.column_config.NumberColumn("WIN %", format="%.1f%%"),
+                "RAW_LEGS_DATA": None # Hide raw data
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="portfolio_editor"
+        )
+        
+        # SYNC SELECTION BACK TO STATE
+        # We iterate through the original list and update the "BET?" status based on the editor
+        # Note: data_editor returns a new DF. We must map it back.
+        # Simplest way: The index of display_df matches st.session_state.generated_parlays
+        
+        # Update the master list 'BET?' status based on the editor
+        for index, row in portfolio_edits.iterrows():
+            st.session_state.generated_parlays[index]['BET?'] = row['BET?']
 
-    if len(st.session_state.generated_parlays) > 0:
-        st.divider()
-        st.subheader("🔮 MONTE_CARLO_SIMULATION")
-        if st.button("RUN_SIMULATION (1000 Runs)"):
-            parlays = st.session_state.generated_parlays
-            sim_profits = []
-            unique_legs = {}
-            for p in parlays:
-                for leg in p['RAW_LEGS_DATA']: unique_legs[leg['Leg Name']] = leg['Est Win %'] / 100.0
+        # Total Stats (Only counting Checked rows)
+        active_portfolio = [p for p in st.session_state.generated_parlays if p['BET?']]
+        total_risk = sum(p['WAGER'] for p in active_portfolio)
+        total_ev = sum(p['EV'] for p in active_portfolio)
+        
+        st.caption(f"ACTIVE PORTFOLIO: {len(active_portfolio)} Tickets Selected")
+        c1, c2 = st.columns(2)
+        c1.metric("TOTAL_RISK (Active)", format_money(total_risk))
+        c2.metric("TOTAL_EV (Active)", format_money(total_ev))
 
-            for _ in range(1000):
-                leg_outcomes = {name: random.random() < prob for name, prob in unique_legs.items()}
-                run_profit = 0
-                for p in parlays:
-                    all_hit = all(leg_outcomes[leg['Leg Name']] for leg in p['RAW_LEGS_DATA'])
-                    if all_hit: run_profit += p['PAYOUT']
-                    else: run_profit -= p['WAGER']
-                sim_profits.append(run_profit)
-
-            sim_df = pd.DataFrame(sim_profits, columns=['Profit'])
-            chart = alt.Chart(sim_df).mark_bar(color='#00ff41').encode(
-                alt.X("Profit", bin=alt.Bin(maxbins=30)), y='count()'
-            ).properties(background='transparent').configure_axis(labelColor='#e0e0e0', titleColor='#00ff41')
-            st.altair_chart(chart, use_container_width=True)
-            st.metric("AVG_EXPECTED_PROFIT", format_money(np.mean(sim_profits)))
+# ==========================================
+# TAB 2: SCENARIOS
+# ==========================================
+with tab_scenarios:
+    st.header("🧪 SCENARIO_STRESS_TESTER")
+    st.caption("Only analyzes tickets marked as 'PLACED?' in the Builder tab.")
