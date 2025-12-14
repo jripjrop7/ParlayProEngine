@@ -87,6 +87,17 @@ def american_to_decimal(odds):
 
 def format_money(val):
     return f"${val:,.2f}"
+def kelly_criterion(decimal_odds, win_prob_percent, fractional_kelly=0.25):
+    """
+    Returns % of bankroll to wager.
+    fractional_kelly: Conservative pros use 0.25 (Quarter Kelly) to avoid volatility.
+    """
+    b = decimal_odds - 1
+    p = win_prob_percent / 100
+    q = 1 - p
+
+    kelly_perc = (b * p - q) / b
+    return max(0, kelly_perc * fractional_kelly) 
 
 # --- SIDEBAR: CONTROLS ---
 with st.sidebar:
