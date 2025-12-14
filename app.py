@@ -9,7 +9,7 @@ from datetime import datetime
 
 # --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="QUANT_PARLAY_ENGINE_V20", 
+    page_title="QUANT_PARLAY_ENGINE_V20.1", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -104,24 +104,17 @@ def fetch_fanduel_odds(api_key, sport_key):
         st.error(f"API Error: {e}")
         return []
 
-# --- CALLBACK FUNCTIONS (THE FIX FOR DOUBLE CLICK) ---
+# --- CALLBACK FUNCTIONS ---
 def update_main_data():
-    # Syncs the editor state back to the permanent session state immediately on change
-    st.session_state.input_data = st.session_state["editor_widget"]
+    if st.session_state["editor_widget"] is not None:
+        st.session_state.input_data = st.session_state["editor_widget"]
 
 def update_portfolio_data():
-    # Updates the 'BET?' status in the generated parlays list immediately
-    edits = st.session_state["portfolio_editor"]
-    # Reconstruct the updates
-    # The data_editor returns the full dataframe in the state key
-    # We iterate and update our master list
-    # Note: st.session_state["portfolio_editor"] is a DataFrame containing the edited data
-    edited_df = st.session_state["portfolio_editor"]
-    
-    # We map the 'BET?' column back to our list of dictionaries
-    for index, row in edited_df.iterrows():
-        if index < len(st.session_state.generated_parlays):
-            st.session_state.generated_parlays[index]['BET?'] = row['BET?']
+    if st.session_state["portfolio_editor"] is not None:
+        edited_df = st.session_state["portfolio_editor"]
+        for index, row in edited_df.iterrows():
+            if index < len(st.session_state.generated_parlays):
+                st.session_state.generated_parlays[index]['BET?'] = row['BET?']
 
 # --- INITIALIZE STATE ---
 if 'input_data' not in st.session_state:
@@ -178,10 +171,14 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### > DATA_PERSISTENCE")
     
-    csv_input = st.session_state.input_data.to_csv(index=False).encode('utf-8')
-    st.download_button("💾 SAVE_INPUTS (CSV)", csv_input, "parlay_inputs.csv", "text/csv")
-    csv_hist = st.session_state.bet_history.to_csv(index=False).encode('utf-8')
-    st.download_button("💾 SAVE_HISTORY (CSV)", csv_hist, "bet_ledger.csv", "text/csv")
+    # SAFETY CHECK: Only generate CSV button if data is valid
+    if st.session_state.input_data is not None:
+        csv_input = st.session_state.input_data.to_csv(index=False).encode('utf-8')
+        st.download_button("💾 SAVE_INPUTS (CSV)", csv_input, "parlay_inputs.csv", "text/csv")
+    
+    if st.session_state.bet_history is not None:
+        csv_hist = st.session_state.bet_history.to_csv(index=False).encode('utf-8')
+        st.download_button("💾 SAVE_HISTORY (CSV)", csv_hist, "bet_ledger.csv", "text/csv")
 
     uploaded_file = st.file_uploader("📂 LOAD_INPUTS", type=["csv"])
     if uploaded_file is not None:
@@ -228,7 +225,7 @@ with st.sidebar:
     max_combos = st.number_input("MAX_ITERATIONS", min_value=1, max_value=1000000, value=5000, step=100)
 
 # --- MAIN APP LAYOUT ---
-st.title("> QUANT_PARLAY_ENGINE_V20")
+st.title("> QUANT_PARLAY_ENGINE_V20.1")
 
 # --- TABS SYSTEM ---
 tab_build, tab_scenarios, tab_hedge, tab_analysis, tab_ledger = st.tabs([
@@ -265,7 +262,11 @@ with tab_build:
                 st.success(f"CLONED {len(rows_to_clone)} ROWS")
                 st.rerun()
 
-    # --- MAIN TABLE (WITH CALLBACK FIX) ---
+    # --- MAIN TABLE ---
+    # Safety Check: ensure input_data is not None before display
+    if st.session_state.input_data is None:
+        st.session_state.input_data = pd.DataFrame(columns=["Active", "Excl Group", "Link Group", "Leg Name", "Odds", "Conf (1-10)"])
+
     st.data_editor(
         st.session_state.input_data, 
         column_config={
@@ -279,10 +280,9 @@ with tab_build:
         num_rows="dynamic", 
         use_container_width=True, 
         key="editor_widget",
-        on_change=update_main_data  # <--- THIS CALLBACK FIXES THE GLITCH
+        on_change=update_main_data  
     )
 
-    # Process Data for Calculation (Read from State directly now)
     if not st.session_state.input_data.empty:
         df = st.session_state.input_data.copy()
         active_df = df[df["Active"] == True].copy()
@@ -353,7 +353,6 @@ with tab_build:
         display_df = results_df.copy()
         display_df['LEGS'] = display_df['LEGS'].apply(lambda x: " + ".join(x))
         
-        # --- RESULTS TABLE (WITH CALLBACK FIX) ---
         st.data_editor(
             display_df,
             column_config={
@@ -368,7 +367,7 @@ with tab_build:
             },
             hide_index=True, use_container_width=True, 
             key="portfolio_editor",
-            on_change=update_portfolio_data # <--- THIS CALLBACK FIXES THE GLITCH
+            on_change=update_portfolio_data 
         )
 
         st.write("")
