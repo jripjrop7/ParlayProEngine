@@ -8,7 +8,7 @@ import random
 
 # --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="QUANT_PARLAY_ENGINE_V17", 
+    page_title="QUANT_PARLAY_ENGINE_V18", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -187,12 +187,10 @@ with st.sidebar:
     target_min_odds = st.number_input("MIN_ODDS (+)", 100, 100000, 100)
     target_max_odds = st.number_input("MAX_ODDS (+)", 100, 500000, 10000)
     min_ev_filter = st.checkbox("FILTER_NEG_EV", value=True)
-    
-    # --- UPDATED: ITERATIONS INPUT ---
     max_combos = st.number_input("MAX_ITERATIONS", min_value=1, max_value=1000000, value=5000, step=100)
 
 # --- MAIN APP LAYOUT ---
-st.title("> QUANT_PARLAY_ENGINE_V17")
+st.title("> QUANT_PARLAY_ENGINE_V18")
 
 # --- TABS SYSTEM ---
 tab_build, tab_scenarios, tab_hedge, tab_analysis = st.tabs(["🏗️ BUILDER", "🧪 SCENARIOS", "🛡️ HEDGE_CALC", "📊 ANALYSIS"])
@@ -296,7 +294,7 @@ with tab_build:
                         ev = (final_win_prob * payout) - ((1 - final_win_prob) * wager)
 
                         valid_parlays.append({
-                            "BET?": False, # --- UPDATED: DEFAULT TO FALSE ---
+                            "BET?": False,
                             "LEGS": [l['Leg Name'] for l in combo],
                             "ODDS": dec_total,
                             "PROB": final_win_prob * 100,
@@ -310,13 +308,12 @@ with tab_build:
             st.session_state.generated_parlays = valid_parlays
             st.rerun()
 
-    # --- RESULTS DISPLAY ---
+    # --- RESULTS DISPLAY WITH COPY ---
     if len(st.session_state.generated_parlays) > 0:
         st.divider()
         st.markdown("### 📋 GENERATED_PORTFOLIO")
         
         results_df = pd.DataFrame(st.session_state.generated_parlays)
-        
         display_df = results_df.copy()
         display_df['LEGS'] = display_df['LEGS'].apply(lambda x: " + ".join(x))
         
@@ -340,14 +337,28 @@ with tab_build:
         for index, row in portfolio_edits.iterrows():
             st.session_state.generated_parlays[index]['BET?'] = row['BET?']
 
+        # --- COPY SECTION ---
+        st.divider()
+        st.subheader("📋 COPY_TO_SPORTSBOOK (Placed Tickets Only)")
         active_portfolio = [p for p in st.session_state.generated_parlays if p['BET?']]
+        
+        if not active_portfolio:
+            st.info("Check the 'PLACED?' box on any ticket above to see the copy-friendly text here.")
+        else:
+            for i, p in enumerate(active_portfolio):
+                leg_str = " + ".join(p['LEGS'])
+                copy_str = f"{leg_str}\n(Odds: {p['ODDS']:.2f}) | Wager: {format_money(p['WAGER'])}"
+                c1, c2 = st.columns([5, 1])
+                with c1: st.code(copy_str, language="text")
+                with c2: st.caption(f"Ticket #{i+1}")
+
+        # Stats for Checked Rows
         total_risk = sum(p['WAGER'] for p in active_portfolio)
         total_ev = sum(p['EV'] for p in active_portfolio)
-        
-        st.caption(f"ACTIVE PORTFOLIO: {len(active_portfolio)} Tickets Selected")
+        st.divider()
         c1, c2 = st.columns(2)
-        c1.metric("TOTAL_RISK (Active)", format_money(total_risk))
-        c2.metric("TOTAL_EV (Active)", format_money(total_ev))
+        c1.metric("TOTAL_RISK (Placed Only)", format_money(total_risk))
+        c2.metric("TOTAL_EV (Placed Only)", format_money(total_ev))
 
 # ==========================================
 # TAB 2: SCENARIOS
