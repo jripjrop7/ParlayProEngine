@@ -189,7 +189,43 @@ with st.expander("➕ OPEN_PROP_BUILDER (Click to Add Custom Bets)"):
         new_prop_odds = st.number_input("ODDS (AMER)", value=-110, step=10)
     with c4:
         new_prop_conf = st.slider("CONFIDENCE", 1, 10, 5)
+
+    # --- ALPHA HUNTER VISUALIZER (NEW) ---
+if not st.session_state.input_data.empty:
+    with st.expander("📈 MARKET_ANALYSIS (Alpha Hunter)"):
+        # Prepare data for plotting
+        plot_data = st.session_state.input_data.copy()
+        plot_data['Active'] = plot_data['Active'].astype(bool)
+        plot_data = plot_data[plot_data['Active'] == True]
         
+        if not plot_data.empty:
+            # Calculate metrics
+            plot_data['Decimal'] = plot_data['Odds'].apply(american_to_decimal)
+            plot_data['Implied_Prob'] = (1 / plot_data['Decimal']) * 100
+            plot_data['My_Prob'] = plot_data['Conf (1-10)'] * 10
+            plot_data['Edge'] = plot_data['My_Prob'] - plot_data['Implied_Prob']
+            plot_data['Color'] = plot_data['Edge'].apply(lambda x: '#00ff41' if x > 0 else '#ff4b4b')
+            
+            # The Chart
+            c = alt.Chart(plot_data).mark_circle(size=100).encode(
+                x=alt.X('Implied_Prob', title='Bookmaker Implied Probability (%)', scale=alt.Scale(domain=[0, 100])),
+                y=alt.Y('My_Prob', title='My Confidence (%)', scale=alt.Scale(domain=[0, 100])),
+                color=alt.Color('Color', scale=None),
+                tooltip=['Leg Name', 'Odds', 'Edge']
+            ).properties(
+                title="Your Edge vs. The Bookie",
+                height=300,
+                background='transparent'
+            )
+            
+            # The Break-Even Line (x=y)
+            line = alt.Chart(pd.DataFrame({'x': [0, 100], 'y': [0, 100]})).mark_line(
+                color='#666', strokeDash=[5, 5]
+            ).encode(x='x', y='y')
+            
+            st.altair_chart((c + line).interactive(), use_container_width=True)
+            st.caption("DOTS ABOVE DOTTED LINE = +EV (Good Bets). DOTS BELOW = -EV (Bad Bets).")
+
     if st.button("ADD_PROP_TO_TABLE"):
         if new_prop_name:
             new_row = {
