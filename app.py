@@ -5,10 +5,11 @@ import numpy as np
 import altair as alt
 import requests
 import random
+from datetime import datetime
 
 # --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="QUANT_PARLAY_ENGINE_V18", 
+    page_title="QUANT_PARLAY_ENGINE_V19", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -115,13 +116,31 @@ if 'input_data' not in st.session_state:
 if 'generated_parlays' not in st.session_state:
     st.session_state.generated_parlays = []
     
-if 'portfolio_state' not in st.session_state:
-    st.session_state.portfolio_state = pd.DataFrame()
+if 'bet_history' not in st.session_state:
+    # Structure for the Ledger
+    st.session_state.bet_history = pd.DataFrame(columns=[
+        "Date", "Legs", "Odds", "Wager", "Payout", "Result", "Profit"
+    ])
 
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("/// SYSTEM_CONTROLS")
     
+    # --- FAIR VALUE CALCULATOR (NEW) ---
+    with st.expander("⚖️ FAIR_VALUE_CALC (Vig Remover)"):
+        fv_odds_1 = st.number_input("Side A Odds (e.g. -110)", value=-110, step=5)
+        fv_odds_2 = st.number_input("Side B Odds (e.g. -110)", value=-110, step=5)
+        if st.button("CALC_TRUE_PROB"):
+            dec1 = american_to_decimal(fv_odds_1)
+            dec2 = american_to_decimal(fv_odds_2)
+            imp1 = (1/dec1)
+            imp2 = (1/dec2)
+            total_imp = imp1 + imp2 # Will be > 100% due to vig
+            true_prob1 = (imp1 / total_imp) * 100
+            st.metric("Side A True Win %", f"{true_prob1:.1f}%")
+            st.caption(f"Use this % for Confidence.")
+
+    st.markdown("---")
     st.markdown("### > LIVE_DATA_FEED")
     api_key = st.text_input("API_KEY (The Odds API)", type="password")
     sport_select = st.selectbox("TARGET_MARKET", 
@@ -144,15 +163,15 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### > DATA_PERSISTENCE")
     
-    csv = st.session_state.input_data.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="💾 DOWNLOAD_DATABASE (CSV)",
-        data=csv,
-        file_name="parlay_master_list.csv",
-        mime="text/csv",
-    )
+    # SAVE/LOAD INPUTS
+    csv_input = st.session_state.input_data.to_csv(index=False).encode('utf-8')
+    st.download_button("💾 SAVE_INPUTS (CSV)", csv_input, "parlay_inputs.csv", "text/csv")
+    
+    # SAVE/LOAD HISTORY
+    csv_hist = st.session_state.bet_history.to_csv(index=False).encode('utf-8')
+    st.download_button("💾 SAVE_HISTORY (CSV)", csv_hist, "bet_ledger.csv", "text/csv")
 
-    uploaded_file = st.file_uploader("📂 LOAD_DATABASE", type=["csv"])
+    uploaded_file = st.file_uploader("📂 LOAD_INPUTS", type=["csv"])
     if uploaded_file is not None:
         try:
             loaded_df = pd.read_csv(uploaded_file)
@@ -162,8 +181,16 @@ with st.sidebar:
             st.session_state.input_data = loaded_df
             st.success("DATABASE_RESTORED")
             st.rerun()
-        except Exception as e:
-            st.error(f"ERROR: {e}")
+        except Exception as e: st.error(f"ERROR: {e}")
+
+    # NEW: Load History
+    uploaded_hist = st.file_uploader("📂 LOAD_HISTORY", type=["csv"])
+    if uploaded_hist is not None:
+        try:
+            st.session_state.bet_history = pd.read_csv(uploaded_hist)
+            st.success("LEDGER RESTORED")
+            st.rerun()
+        except: pass
 
     st.markdown("---")
     if st.button("🗑️ CLEAR_ALL_DATA"):
@@ -190,10 +217,12 @@ with st.sidebar:
     max_combos = st.number_input("MAX_ITERATIONS", min_value=1, max_value=1000000, value=5000, step=100)
 
 # --- MAIN APP LAYOUT ---
-st.title("> QUANT_PARLAY_ENGINE_V18")
+st.title("> QUANT_PARLAY_ENGINE_V19")
 
 # --- TABS SYSTEM ---
-tab_build, tab_scenarios, tab_hedge, tab_analysis = st.tabs(["🏗️ BUILDER", "🧪 SCENARIOS", "🛡️ HEDGE_CALC", "📊 ANALYSIS"])
+tab_build, tab_scenarios, tab_hedge, tab_analysis, tab_ledger = st.tabs([
+    "🏗️ BUILDER", "🧪 SCENARIOS", "🛡️ HEDGE_CALC", "📊 ANALYSIS", "📜 LEDGER"
+])
 
 # ==========================================
 # TAB 1: BUILDER
@@ -202,19 +231,15 @@ with tab_build:
     with st.expander("➕ OPEN_PROP_BUILDER (Click to Add Custom Bets)"):
         st.markdown("`>> MANUAL_OVERRIDE_PROTOCOL`")
         c1, c2, c3, c4, c5 = st.columns([2, 1, 1, 1, 1])
-        
         with c1: new_prop_name = st.text_input("PROP_NAME", placeholder="e.g. LeBron Over 25.5 Pts")
         with c2: new_excl_group = st.text_input("⛔ EXCL_ID", placeholder="Conflict ID")
         with c3: new_link_group = st.text_input("🔗 LINK_ID", placeholder="Correlation ID")
         with c4: new_prop_odds = st.number_input("ODDS (AMER)", value=-110, step=10)
         with c5: new_prop_conf = st.slider("CONFIDENCE", 1, 10, 5)
-            
         if st.button("ADD_PROP_TO_TABLE"):
             if new_prop_name:
-                new_row = {
-                    "Active": True, "Excl Group": new_excl_group, "Link Group": new_link_group,
-                    "Leg Name": new_prop_name, "Odds": new_prop_odds, "Conf (1-10)": new_prop_conf
-                }
+                new_row = {"Active": True, "Excl Group": new_excl_group, "Link Group": new_link_group,
+                    "Leg Name": new_prop_name, "Odds": new_prop_odds, "Conf (1-10)": new_prop_conf}
                 st.session_state.input_data = pd.concat([st.session_state.input_data, pd.DataFrame([new_row])], ignore_index=True)
                 st.success(f"ADDED: {new_prop_name}")
                 st.rerun()
@@ -241,7 +266,6 @@ with tab_build:
         },
         num_rows="dynamic", use_container_width=True, key="editor_widget" 
     )
-
     st.session_state.input_data = edited_df
 
     if not edited_df.empty:
@@ -255,8 +279,7 @@ with tab_build:
 
     st.write("") 
     if st.button(">>> GENERATE_OPTIMIZED_HEDGE"):
-        if active_df.empty:
-            st.error("NO_ACTIVE_LEGS")
+        if active_df.empty: st.error("NO_ACTIVE_LEGS")
         else:
             legs_list = active_df.to_dict('records')
             valid_parlays = []
@@ -304,15 +327,13 @@ with tab_build:
                             "RAW_LEGS_DATA": combo,
                             "BOOST": "🚀" if is_correlated else ""
                         })
-            
             st.session_state.generated_parlays = valid_parlays
             st.rerun()
 
-    # --- RESULTS DISPLAY WITH COPY ---
+    # --- RESULTS ---
     if len(st.session_state.generated_parlays) > 0:
         st.divider()
         st.markdown("### 📋 GENERATED_PORTFOLIO")
-        
         results_df = pd.DataFrame(st.session_state.generated_parlays)
         display_df = results_df.copy()
         display_df['LEGS'] = display_df['LEGS'].apply(lambda x: " + ".join(x))
@@ -329,21 +350,40 @@ with tab_build:
                 "PROB": st.column_config.NumberColumn("WIN %", format="%.1f%%"),
                 "RAW_LEGS_DATA": None 
             },
-            hide_index=True,
-            use_container_width=True,
-            key="portfolio_editor"
+            hide_index=True, use_container_width=True, key="portfolio_editor"
         )
-        
-        for index, row in portfolio_edits.iterrows():
-            st.session_state.generated_parlays[index]['BET?'] = row['BET?']
+        for index, row in portfolio_edits.iterrows(): st.session_state.generated_parlays[index]['BET?'] = row['BET?']
 
-        # --- COPY SECTION ---
+        # COMMIT TO LEDGER BUTTON
+        st.write("")
+        col_commit, col_space = st.columns([1, 4])
+        with col_commit:
+            if st.button("💾 COMMIT_PLACED_TO_LEDGER"):
+                placed_bets = [p for p in st.session_state.generated_parlays if p['BET?']]
+                if placed_bets:
+                    new_history_rows = []
+                    today_str = datetime.now().strftime("%Y-%m-%d")
+                    for p in placed_bets:
+                        new_history_rows.append({
+                            "Date": today_str,
+                            "Legs": " + ".join(p['LEGS']),
+                            "Odds": round(p['ODDS'], 2),
+                            "Wager": round(p['WAGER'], 2),
+                            "Payout": round(p['PAYOUT'], 2),
+                            "Result": "Pending", # Default status
+                            "Profit": 0.0
+                        })
+                    
+                    st.session_state.bet_history = pd.concat([st.session_state.bet_history, pd.DataFrame(new_history_rows)], ignore_index=True)
+                    st.success(f"COMMITTED {len(placed_bets)} BETS TO LEDGER")
+                else:
+                    st.warning("NO 'PLACED?' BETS SELECTED")
+
+        # COPY TOOLS
         st.divider()
-        st.subheader("📋 COPY_TO_SPORTSBOOK (Placed Tickets Only)")
+        st.subheader("📋 COPY_TO_SPORTSBOOK (Placed Only)")
         active_portfolio = [p for p in st.session_state.generated_parlays if p['BET?']]
-        
-        if not active_portfolio:
-            st.info("Check the 'PLACED?' box on any ticket above to see the copy-friendly text here.")
+        if not active_portfolio: st.info("Check 'PLACED?' to view tickets.")
         else:
             for i, p in enumerate(active_portfolio):
                 leg_str = " + ".join(p['LEGS'])
@@ -352,7 +392,6 @@ with tab_build:
                 with c1: st.code(copy_str, language="text")
                 with c2: st.caption(f"Ticket #{i+1}")
 
-        # Stats for Checked Rows
         total_risk = sum(p['WAGER'] for p in active_portfolio)
         total_ev = sum(p['EV'] for p in active_portfolio)
         st.divider()
@@ -365,24 +404,16 @@ with tab_build:
 # ==========================================
 with tab_scenarios:
     st.header("🧪 SCENARIO_STRESS_TESTER")
-    st.caption("Only analyzes tickets marked as 'PLACED?' in the Builder tab.")
-    
     active_parlays = [p for p in st.session_state.generated_parlays if p.get('BET?', False)]
-    
-    if len(active_parlays) == 0:
-        st.warning("NO ACTIVE BETS SELECTED. Go to Builder and check 'PLACED?'.")
+    if len(active_parlays) == 0: st.warning("NO ACTIVE BETS SELECTED.")
     else:
         unique_legs_set = set()
         for p in active_parlays:
-            for leg in p['RAW_LEGS_DATA']:
-                unique_legs_set.add(leg['Leg Name'])
-        
+            for leg in p['RAW_LEGS_DATA']: unique_legs_set.add(leg['Leg Name'])
         unique_legs_list = sorted(list(unique_legs_set))
-        
         st.markdown("#### SET OUTCOMES:")
         col_list = st.columns(3)
         scenario_state = {}
-        
         for i, leg in enumerate(unique_legs_list):
             with col_list[i % 3]:
                 status = st.radio(f"{leg}", ["Pending", "WIN ✅", "LOSS ❌"], index=0, key=f"scen_{i}", horizontal=True)
@@ -393,29 +424,17 @@ with tab_scenarios:
             tickets_won = 0
             tickets_lost = 0
             tickets_pending = 0
-            
             for p in active_parlays:
                 wager = p['WAGER']
                 payout = p['PAYOUT']
-                
                 ticket_status = "WIN"
                 for leg in p['RAW_LEGS_DATA']:
                     s = scenario_state[leg['Leg Name']]
-                    if s == "LOSS ❌":
-                        ticket_status = "LOSS"
-                        break
-                    elif s == "Pending":
-                        ticket_status = "PENDING"
-                
-                if ticket_status == "WIN":
-                    simulated_pnl += payout
-                    tickets_won += 1
-                elif ticket_status == "LOSS":
-                    simulated_pnl -= wager
-                    tickets_lost += 1
-                else:
-                    tickets_pending += 1
-            
+                    if s == "LOSS ❌": ticket_status = "LOSS"; break
+                    elif s == "Pending": ticket_status = "PENDING"
+                if ticket_status == "WIN": simulated_pnl += payout; tickets_won += 1
+                elif ticket_status == "LOSS": simulated_pnl -= wager; tickets_lost += 1
+                else: tickets_pending += 1
             st.divider()
             c_s1, c_s2, c_s3 = st.columns(3)
             c_s1.metric("PROJECTED_P&L", format_money(simulated_pnl), delta="Profit" if simulated_pnl > 0 else "Loss")
@@ -435,11 +454,9 @@ with tab_hedge:
         hedge_odds = st.number_input("Opponent Odds (ML)", value=150)
         hedge_decimal = american_to_decimal(hedge_odds)
         st.metric("Decimal Odds", f"{hedge_decimal:.2f}")
-
     st.divider()
     optimal_hedge = current_payout / hedge_decimal
     guaranteed_profit = current_payout - optimal_hedge - current_wager
-    
     if st.button("CALC_HEDGE"):
         c1, c2 = st.columns(2)
         c1.metric("BET_ON_OPPONENT", format_money(optimal_hedge))
@@ -450,8 +467,6 @@ with tab_hedge:
 # ==========================================
 with tab_analysis:
     st.header("📊 MARKET_INTELLIGENCE")
-    
-    # 1. Alpha Hunter
     if not st.session_state.input_data.empty:
         with st.expander("📈 INPUT_ANALYSIS (Alpha Hunter)"):
             plot_data = st.session_state.input_data.copy()
@@ -462,7 +477,6 @@ with tab_analysis:
                 plot_data['My_Prob'] = plot_data['Conf (1-10)'] * 10
                 plot_data['Edge'] = plot_data['My_Prob'] - plot_data['Implied_Prob']
                 plot_data['Color'] = plot_data['Edge'].apply(lambda x: '#00ff41' if x > 0 else '#ff4b4b')
-                
                 c = alt.Chart(plot_data).mark_circle(size=100).encode(
                     x=alt.X('Implied_Prob', title='Implied Prob (%)'), y=alt.Y('My_Prob', title='My Conf (%)'),
                     color=alt.Color('Color', scale=None), tooltip=['Leg Name', 'Odds', 'Edge']
@@ -470,9 +484,7 @@ with tab_analysis:
                 line = alt.Chart(pd.DataFrame({'x': [0, 100], 'y': [0, 100]})).mark_line(color='#666', strokeDash=[5, 5]).encode(x='x', y='y')
                 st.altair_chart((c + line).interactive(), use_container_width=True)
 
-    # 2. Monte Carlo (FILTERED)
     active_parlays = [p for p in st.session_state.generated_parlays if p.get('BET?', False)]
-    
     if len(active_parlays) > 0:
         st.divider()
         st.subheader(f"🔮 MONTE_CARLO (Simulating {len(active_parlays)} Active Tickets)")
@@ -481,7 +493,6 @@ with tab_analysis:
             unique_legs = {}
             for p in active_parlays:
                 for leg in p['RAW_LEGS_DATA']: unique_legs[leg['Leg Name']] = leg['Est Win %'] / 100.0
-
             for _ in range(1000):
                 leg_outcomes = {name: random.random() < prob for name, prob in unique_legs.items()}
                 run_profit = 0
@@ -489,10 +500,79 @@ with tab_analysis:
                     if all(leg_outcomes[leg['Leg Name']] for leg in p['RAW_LEGS_DATA']): run_profit += p['PAYOUT']
                     else: run_profit -= p['WAGER']
                 sim_profits.append(run_profit)
-
             sim_df = pd.DataFrame(sim_profits, columns=['Profit'])
             chart = alt.Chart(sim_df).mark_bar(color='#00ff41').encode(
                 alt.X("Profit", bin=alt.Bin(maxbins=30)), y='count()'
             ).properties(background='transparent').configure_axis(labelColor='#e0e0e0', titleColor='#00ff41')
             st.altair_chart(chart, use_container_width=True)
             st.metric("AVG_PROFIT", format_money(np.mean(sim_profits)))
+
+# ==========================================
+# TAB 5: LEDGER (NEW)
+# ==========================================
+with tab_ledger:
+    st.header("📜 BET_TRACKING_LEDGER")
+    
+    if st.session_state.bet_history.empty:
+        st.info("No bets in history yet. Go to Builder and click 'COMMIT_PLACED_TO_LEDGER'.")
+    else:
+        # Display Editable History
+        st.caption("Mark your bets as 'Won' or 'Lost' to update P&L.")
+        
+        history_editor = st.data_editor(
+            st.session_state.bet_history,
+            column_config={
+                "Date": st.column_config.TextColumn("Date", disabled=True),
+                "Legs": st.column_config.TextColumn("Ticket Legs", disabled=True, width="large"),
+                "Odds": st.column_config.NumberColumn("Odds", disabled=True),
+                "Wager": st.column_config.NumberColumn("Wager", format="$%.2f", disabled=True),
+                "Payout": st.column_config.NumberColumn("Pot. Payout", format="$%.2f", disabled=True),
+                "Result": st.column_config.SelectboxColumn("Status", options=["Pending", "Won", "Lost"], required=True),
+                "Profit": st.column_config.NumberColumn("P&L", format="$%.2f", disabled=True)
+            },
+            hide_index=True,
+            use_container_width=True,
+            num_rows="dynamic" # Allow deletion
+        )
+        
+        # Calculate Logic
+        updated_history = history_editor.copy()
+        
+        # Auto-Calc Profit based on Status
+        for i, row in updated_history.iterrows():
+            if row['Result'] == 'Won':
+                updated_history.at[i, 'Profit'] = row['Payout'] # Profit is net payout usually, but here displayed as full return? 
+                # Actually Payout usually includes stake. Let's assume Payout = Total Return.
+                # Profit = Payout - Wager
+                updated_history.at[i, 'Profit'] = row['Payout'] # Net logic below
+            elif row['Result'] == 'Lost':
+                updated_history.at[i, 'Profit'] = -row['Wager']
+            else:
+                updated_history.at[i, 'Profit'] = 0.0
+
+        st.session_state.bet_history = updated_history
+        
+        # SUMMARY METRICS
+        total_wagered = updated_history['Wager'].sum()
+        total_profit = updated_history['Profit'].sum()
+        roi = (total_profit / total_wagered * 100) if total_wagered > 0 else 0.0
+        
+        st.divider()
+        m1, m2, m3 = st.columns(3)
+        m1.metric("TOTAL_VOLUME", format_money(total_wagered))
+        m2.metric("NET_PROFIT", format_money(total_profit), delta_color="normal")
+        m3.metric("ROI %", f"{roi:.2f}%", delta=f"{roi:.2f}%")
+        
+        # P&L CHART
+        if not updated_history.empty:
+            st.subheader("Performance Chart")
+            # Create a running total
+            chart_data = updated_history.copy()
+            chart_data['Cumulative'] = chart_data['Profit'].cumsum()
+            chart_data['Index'] = range(1, len(chart_data) + 1)
+            
+            chart = alt.Chart(chart_data).mark_line(point=True, color='#00ff41').encode(
+                x=alt.X('Index', title='Bet Count'),
+                y=alt.Y('Cumulative', title='Total Profit ($)')
+            ).properties(background='transparent').configure_axis(labelColor='#e0e0e0', titleColor='#00ff41')
+            st.altair_chart(chart, use_container_width=True)
