@@ -8,7 +8,7 @@ import random
 
 # --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="QUANT_PARLAY_ENGINE_V10", 
+    page_title="QUANT_PARLAY_ENGINE_V10.1", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -100,7 +100,6 @@ if 'input_data' not in st.session_state:
         {"Active": True, "Group": "", "Leg Name": "Manual Entry 1", "Odds": -110, "Conf (1-10)": 5},
     ])
     
-# Initialize Results State (Fix for disappearing table)
 if 'generated_parlays' not in st.session_state:
     st.session_state.generated_parlays = []
 
@@ -155,7 +154,7 @@ with st.sidebar:
     st.markdown("---")
     if st.button("🗑️ CLEAR_ALL_DATA"):
         st.session_state.input_data = pd.DataFrame(columns=["Active", "Group", "Leg Name", "Odds", "Conf (1-10)"])
-        st.session_state.generated_parlays = [] # Clear results too
+        st.session_state.generated_parlays = []
         st.rerun()
 
     st.markdown("### > BANKROLL")
@@ -173,7 +172,7 @@ with st.sidebar:
     max_combos = st.select_slider("MAX_ITERATIONS", options=[1000, 5000, 10000], value=5000)
 
 # --- MAIN APP ---
-st.title("> QUANT_PARLAY_ENGINE_V10")
+st.title("> QUANT_PARLAY_ENGINE_V10.1")
 
 # --- PROP BUILDER ---
 st.subheader("1.0 // DATA_ENTRY")
@@ -242,6 +241,11 @@ st.session_state.input_data = edited_df
 if not edited_df.empty:
     df = edited_df.copy()
     active_df = df[df["Active"] == True].copy()
+    
+    # --- CALCULATION LOGIC RESTORED ---
+    active_df['Decimal'] = active_df['Odds'].apply(american_to_decimal)
+    active_df['Est Win %'] = active_df['Conf (1-10)'] * 10 
+    # ----------------------------------
 else:
     st.info("TABLE_EMPTY")
     st.stop()
@@ -295,11 +299,10 @@ if st.button(">>> GENERATE_OPTIMIZED_HEDGE"):
                         "RAW_LEGS_DATA": combo 
                     })
         
-        # SAVE TO SESSION STATE
         st.session_state.generated_parlays = valid_parlays
-        st.rerun() # Force Reload to show results
+        st.rerun()
 
-# --- DISPLAY LOGIC (SEPARATED FROM BUTTON) ---
+# --- DISPLAY LOGIC ---
 if len(st.session_state.generated_parlays) > 0:
     st.divider()
     results = pd.DataFrame(st.session_state.generated_parlays)
@@ -324,7 +327,6 @@ if len(st.session_state.generated_parlays) > 0:
         st.metric("TOTAL_RISK", format_money(results['WAGER'].sum()))
         st.metric("TOTAL_EXP_VALUE", format_money(results['EV'].sum()))
         
-        # --- MONTE CARLO ---
         st.divider()
         st.subheader("3.0 // RISK_SIM")
         
@@ -363,6 +365,3 @@ if len(st.session_state.generated_parlays) > 0:
             
             profitable = len([x for x in sim_profits if x > 0])
             st.caption(f"WIN_PROB: {(profitable/1000)*100:.1f}%")
-else:
-    # No results yet
-    pass
