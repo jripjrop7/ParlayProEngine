@@ -7,7 +7,7 @@ import requests
 
 # --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="QUANT_PARLAY_ENGINE_V3", 
+    page_title="QUANT_PARLAY_ENGINE_V4", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -34,6 +34,12 @@ st.markdown("""
     div.stButton > button:hover {
         background-color: #00ff41; color: #000000; box-shadow: 0 0 10px #00ff41;
     }
+    /* Expander Styling */
+    .streamlit-expanderHeader {
+        background-color: #1a1c24;
+        color: #00ff41;
+        border: 1px solid #333;
+    }
     section[data-testid="stSidebar"] { background-color: #111; border-right: 1px solid #333; }
 </style>
 """, unsafe_allow_html=True)
@@ -46,13 +52,6 @@ def american_to_decimal(odds):
         elif odds <= -100: return (100 / abs(odds)) + 1
         return 1.0
     except: return 1.0
-
-def decimal_to_american(decimal):
-    if decimal >= 2:
-        return int((decimal - 1) * 100)
-    elif decimal > 1:
-        return int(-100 / (decimal - 1))
-    return -100
 
 def format_money(val):
     return f"${val:,.2f}"
@@ -67,28 +66,21 @@ def kelly_criterion(decimal_odds, win_prob_percent, fractional_kelly=0.25):
 
 # --- API LOGIC ---
 def fetch_fanduel_odds(api_key, sport_key):
-    # Fetch data from The Odds API
     url = f'https://api.the-odds-api.com/v4/sports/{sport_key}/odds'
     params = {
         'apiKey': api_key,
         'regions': 'us',
-        'markets': 'h2h', # Head to head (Moneyline)
+        'markets': 'h2h', 
         'bookmakers': 'fanduel',
         'oddsFormat': 'american'
     }
-    
     try:
         response = requests.get(url, params=params)
         response.raise_for_status()
         data = response.json()
-        
         new_legs = []
-        
         for game in data:
-            # We use the Game ID as the "Group" so you can't bet both sides
             game_group_id = game['id'][-5:] 
-            
-            # Find FanDuel odds
             for bookmaker in game['bookmakers']:
                 if bookmaker['key'] == 'fanduel':
                     for market in bookmaker['markets']:
@@ -96,12 +88,11 @@ def fetch_fanduel_odds(api_key, sport_key):
                             for outcome in market['outcomes']:
                                 leg_name = f"{outcome['name']} (ML)"
                                 price = outcome['price']
-                                
                                 new_legs.append({
                                     "Group": game_group_id,
                                     "Leg Name": leg_name,
                                     "Odds": price,
-                                    "Conf (1-10)": 5 # Default neutral confidence
+                                    "Conf (1-10)": 5 
                                 })
         return new_legs
     except Exception as e:
@@ -125,7 +116,6 @@ with st.sidebar:
             with st.spinner("FETCHING_LIVE_ODDS..."):
                 fetched_data = fetch_fanduel_odds(api_key, sport_select)
                 if fetched_data:
-                    # Update session state with new data
                     st.session_state.input_data = pd.DataFrame(fetched_data)
                     st.success(f"SUCCESS: LOADED {len(fetched_data)} LINES")
                     st.rerun()
@@ -146,7 +136,7 @@ with st.sidebar:
     max_combos = st.select_slider("MAX_ITERATIONS", options=[1000, 5000, 10000], value=5000)
 
 # --- MAIN APP ---
-st.title("> QUANT_PARLAY_ENGINE_V3")
+st.title("> QUANT_PARLAY_ENGINE_V4")
 
 # Initialize Session State
 if 'input_data' not in st.session_state:
@@ -154,9 +144,40 @@ if 'input_data' not in st.session_state:
         {"Group": "", "Leg Name": "Manual Entry 1", "Odds": -110, "Conf (1-10)": 5},
     ])
 
-# DATA EDITOR
+# --- NEW FEATURE: PROP BUILDER ---
 st.subheader("1.0 // DATA_ENTRY")
 
+with st.expander("➕ OPEN_PROP_BUILDER (Click to Add Custom Bets)"):
+    st.markdown("`>> MANUAL_OVERRIDE_PROTOCOL`")
+    c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
+    
+    with c1:
+        new_prop_name = st.text_input("PROP_NAME", placeholder="e.g. LeBron Over 25.5 Pts")
+    with c2:
+        new_prop_group = st.text_input("GROUP_ID", placeholder="Optional (Conflict)")
+    with c3:
+        new_prop_odds = st.number_input("ODDS (AMER)", value=-110, step=10)
+    with c4:
+        new_prop_conf = st.slider("CONFIDENCE", 1, 10, 5)
+        
+    if st.button("ADD_PROP_TO_TABLE"):
+        if new_prop_name:
+            new_row = {
+                "Group": new_prop_group, 
+                "Leg Name": new_prop_name, 
+                "Odds": new_prop_odds, 
+                "Conf (1-10)": new_prop_conf
+            }
+            st.session_state.input_data = pd.concat([
+                st.session_state.input_data, 
+                pd.DataFrame([new_row])
+            ], ignore_index=True)
+            st.success(f"ADDED: {new_prop_name}")
+            st.rerun()
+        else:
+            st.warning("ERROR: NAME_REQUIRED")
+
+# --- MAIN TABLE ---
 edited_df = st.data_editor(
     st.session_state.input_data, 
     column_config={
@@ -176,7 +197,7 @@ if not edited_df.empty:
 else:
     st.stop()
 
-# EXECUTION
+# --- EXECUTION ---
 st.write("") 
 if st.button(">>> GENERATE_OPTIMIZED_HEDGE"):
     
@@ -192,7 +213,6 @@ if st.button(">>> GENERATE_OPTIMIZED_HEDGE"):
             if stop_execution: break
             
             for combo in itertools.combinations(legs_list, r):
-                # Conflict Check (Group ID)
                 groups = [str(x['Group']) for x in combo if str(x['Group']).strip()]
                 if len(groups) != len(set(groups)): continue 
                 
@@ -222,7 +242,7 @@ if st.button(">>> GENERATE_OPTIMIZED_HEDGE"):
                     "EV": ev
                 })
 
-    # OUTPUT
+    # --- OUTPUT ---
     st.divider()
     if not valid_parlays:
         st.error("NO_VALID_STRATEGIES_FOUND")
