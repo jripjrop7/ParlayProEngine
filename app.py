@@ -366,3 +366,135 @@ with tab_build:
 with tab_scenarios:
     st.header("🧪 SCENARIO_STRESS_TESTER")
     st.caption("Only analyzes tickets marked as 'PLACED?' in the Builder tab.")
+    
+    # Filter for Checked Parlays Only
+    active_parlays = [p for p in st.session_state.generated_parlays if p.get('BET?', True)]
+    
+    if len(active_parlays) == 0:
+        st.warning("NO ACTIVE BETS SELECTED. Go to Builder and check 'PLACED?'.")
+    else:
+        # Get Unique Legs from ACTIVE parlays only
+        unique_legs_set = set()
+        for p in active_parlays:
+            for leg in p['RAW_LEGS_DATA']:
+                unique_legs_set.add(leg['Leg Name'])
+        
+        unique_legs_list = sorted(list(unique_legs_set))
+        
+        st.markdown("#### SET OUTCOMES:")
+        col_list = st.columns(3)
+        scenario_state = {}
+        
+        for i, leg in enumerate(unique_legs_list):
+            with col_list[i % 3]:
+                status = st.radio(f"{leg}", ["Pending", "WIN ✅", "LOSS ❌"], index=0, key=f"scen_{i}", horizontal=True)
+                scenario_state[leg] = status
+
+        if st.button("RUN_SCENARIO_ANALYSIS"):
+            simulated_pnl = 0
+            tickets_won = 0
+            tickets_lost = 0
+            tickets_pending = 0
+            
+            for p in active_parlays:
+                wager = p['WAGER']
+                payout = p['PAYOUT']
+                
+                ticket_status = "WIN"
+                for leg in p['RAW_LEGS_DATA']:
+                    s = scenario_state[leg['Leg Name']]
+                    if s == "LOSS ❌":
+                        ticket_status = "LOSS"
+                        break
+                    elif s == "Pending":
+                        ticket_status = "PENDING"
+                
+                if ticket_status == "WIN":
+                    simulated_pnl += payout
+                    tickets_won += 1
+                elif ticket_status == "LOSS":
+                    simulated_pnl -= wager
+                    tickets_lost += 1
+                else:
+                    tickets_pending += 1
+            
+            st.divider()
+            c_s1, c_s2, c_s3 = st.columns(3)
+            c_s1.metric("PROJECTED_P&L", format_money(simulated_pnl), delta="Profit" if simulated_pnl > 0 else "Loss")
+            c_s2.metric("TICKETS_WON/LOST", f"{tickets_won} / {tickets_lost}")
+            c_s3.metric("TICKETS_STILL_ALIVE", f"{tickets_pending}")
+
+# ==========================================
+# TAB 3: HEDGE CALC
+# ==========================================
+with tab_hedge:
+    st.header("🛡️ EXIT_STRATEGY")
+    col_h1, col_h2 = st.columns(2)
+    with col_h1:
+        current_payout = st.number_input("Potential Payout ($)", value=1000.0)
+        current_wager = st.number_input("Original Cost ($)", value=50.0)
+    with col_h2:
+        hedge_odds = st.number_input("Opponent Odds (ML)", value=150)
+        hedge_decimal = american_to_decimal(hedge_odds)
+        st.metric("Decimal Odds", f"{hedge_decimal:.2f}")
+
+    st.divider()
+    optimal_hedge = current_payout / hedge_decimal
+    guaranteed_profit = current_payout - optimal_hedge - current_wager
+    
+    if st.button("CALC_HEDGE"):
+        c1, c2 = st.columns(2)
+        c1.metric("BET_ON_OPPONENT", format_money(optimal_hedge))
+        c2.metric("LOCKED_PROFIT", format_money(guaranteed_profit), delta="Risk Free")
+
+# ==========================================
+# TAB 4: ANALYSIS
+# ==========================================
+with tab_analysis:
+    st.header("📊 MARKET_INTELLIGENCE")
+    
+    # 1. Alpha Hunter (Same as before)
+    if not st.session_state.input_data.empty:
+        with st.expander("📈 INPUT_ANALYSIS (Alpha Hunter)"):
+            plot_data = st.session_state.input_data.copy()
+            plot_data = plot_data[plot_data['Active'] == True]
+            if not plot_data.empty:
+                plot_data['Decimal'] = plot_data['Odds'].apply(american_to_decimal)
+                plot_data['Implied_Prob'] = (1 / plot_data['Decimal']) * 100
+                plot_data['My_Prob'] = plot_data['Conf (1-10)'] * 10
+                plot_data['Edge'] = plot_data['My_Prob'] - plot_data['Implied_Prob']
+                plot_data['Color'] = plot_data['Edge'].apply(lambda x: '#00ff41' if x > 0 else '#ff4b4b')
+                
+                c = alt.Chart(plot_data).mark_circle(size=100).encode(
+                    x=alt.X('Implied_Prob', title='Implied Prob (%)'), y=alt.Y('My_Prob', title='My Conf (%)'),
+                    color=alt.Color('Color', scale=None), tooltip=['Leg Name', 'Odds', 'Edge']
+                )
+                line = alt.Chart(pd.DataFrame({'x': [0, 100], 'y': [0, 100]})).mark_line(color='#666', strokeDash=[5, 5]).encode(x='x', y='y')
+                st.altair_chart((c + line).interactive(), use_container_width=True)
+
+    # 2. Monte Carlo (FILTERED)
+    active_parlays = [p for p in st.session_state.generated_parlays if p.get('BET?', True)]
+    
+    if len(active_parlays) > 0:
+        st.divider()
+        st.subheader(f"🔮 MONTE_CARLO (Simulating {len(active_parlays)} Active Tickets)")
+        if st.button("RUN_SIM (1000 Runs)"):
+            sim_profits = []
+            unique_legs = {}
+            for p in active_parlays:
+                for leg in p['RAW_LEGS_DATA']: unique_legs[leg['Leg Name']] = leg['Est Win %'] / 100.0
+
+            for _ in range(1000):
+                leg_outcomes = {name: random.random() < prob for name, prob in unique_legs.items()}
+                run_profit = 0
+                for p in active_parlays:
+                    if all(leg_outcomes[leg['Leg Name']] for leg in p['RAW_LEGS_DATA']): run_profit += p['PAYOUT']
+                    else: run_profit -= p['WAGER']
+                sim_profits.append(run_profit)
+
+            sim_df = pd.DataFrame(sim_profits, columns=['Profit'])
+            chart = alt.Chart(sim_df).mark_bar(color='#00ff41').encode(
+                alt.X("Profit", bin=alt.Bin(maxbins=30)), y='count()'
+            ).properties(background='transparent').configure_axis(labelColor='#e0e0e0', titleColor='#00ff41')
+            st.altair_chart(chart, use_container_width=True)
+            st.metric("AVG_PROFIT", format_money(np.mean(sim_profits)))
