@@ -8,7 +8,7 @@ import random
 
 # --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="QUANT_PARLAY_ENGINE_V9", 
+    page_title="QUANT_PARLAY_ENGINE_V10", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -99,6 +99,10 @@ if 'input_data' not in st.session_state:
     st.session_state.input_data = pd.DataFrame([
         {"Active": True, "Group": "", "Leg Name": "Manual Entry 1", "Odds": -110, "Conf (1-10)": 5},
     ])
+    
+# Initialize Results State (Fix for disappearing table)
+if 'generated_parlays' not in st.session_state:
+    st.session_state.generated_parlays = []
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -151,6 +155,7 @@ with st.sidebar:
     st.markdown("---")
     if st.button("🗑️ CLEAR_ALL_DATA"):
         st.session_state.input_data = pd.DataFrame(columns=["Active", "Group", "Leg Name", "Odds", "Conf (1-10)"])
+        st.session_state.generated_parlays = [] # Clear results too
         st.rerun()
 
     st.markdown("### > BANKROLL")
@@ -168,7 +173,7 @@ with st.sidebar:
     max_combos = st.select_slider("MAX_ITERATIONS", options=[1000, 5000, 10000], value=5000)
 
 # --- MAIN APP ---
-st.title("> QUANT_PARLAY_ENGINE_V9")
+st.title("> QUANT_PARLAY_ENGINE_V10")
 
 # --- PROP BUILDER ---
 st.subheader("1.0 // DATA_ENTRY")
@@ -207,7 +212,7 @@ with st.expander("➕ OPEN_PROP_BUILDER (Click to Add Custom Bets)"):
 # --- CLONE TOOL ---
 col_clone, col_spacer = st.columns([1, 4])
 with col_clone:
-    if st.button("👯 CLONE_SELECTED_ROWS", help="Duplicates any row where 'USE?' is checked."):
+    if st.button("👯 CLONE_SELECTED_ROWS"):
         df = st.session_state.input_data.copy()
         rows_to_clone = df[df['Active'] == True]
         if not rows_to_clone.empty:
@@ -237,150 +242,127 @@ st.session_state.input_data = edited_df
 if not edited_df.empty:
     df = edited_df.copy()
     active_df = df[df["Active"] == True].copy()
-    
-    if active_df.empty:
-        st.warning("NO_ACTIVE_LEGS: Please check the 'USE?' box for at least one leg.")
-        st.stop()
-        
-    active_df['Decimal'] = active_df['Odds'].apply(american_to_decimal)
-    active_df['Est Win %'] = active_df['Conf (1-10)'] * 10 
 else:
     st.info("TABLE_EMPTY")
     st.stop()
 
-# --- EXECUTION ---
+# --- EXECUTION BUTTON ---
 st.write("") 
 if st.button(">>> GENERATE_OPTIMIZED_HEDGE"):
     
-    legs_list = active_df.to_dict('records')
-    valid_parlays = []
-    combo_count = 0
-    stop_execution = False
-    min_dec = american_to_decimal(target_min_odds)
-    max_dec = american_to_decimal(target_max_odds)
-
-    with st.spinner(f"PROCESSING {len(legs_list)} ACTIVE LEGS..."):
-        for r in range(min_legs, max_legs + 1):
-            if stop_execution: break
-            
-            for combo in itertools.combinations(legs_list, r):
-                groups = [str(x['Group']) for x in combo if str(x['Group']).strip()]
-                if len(groups) != len(set(groups)): continue 
-                
-                combo_count += 1
-                if combo_count > max_combos:
-                    stop_execution = True
-                    break
-
-                dec_total = np.prod([x['Decimal'] for x in combo])
-                if not (min_dec <= dec_total <= max_dec): continue
-
-                win_prob = np.prod([x['Est Win %']/100 for x in combo])
-                kelly_pct = kelly_criterion(dec_total, win_prob * 100, kelly_fraction)
-                wager = bankroll * kelly_pct
-                
-                if min_ev_filter and wager <= 0: continue
-                
-                payout = (dec_total * wager) - wager
-                ev = (win_prob * payout) - ((1 - win_prob) * wager)
-
-                valid_parlays.append({
-                    "LEGS": [l['Leg Name'] for l in combo],
-                    "ODDS": dec_total,
-                    "PROB": win_prob * 100,
-                    "WAGER": wager,
-                    "PAYOUT": payout,
-                    "EV": ev,
-                    "RAW_LEGS_DATA": combo # Store raw data for simulation
-                })
-
-    # --- SAVE RESULTS TO STATE FOR SIMULATION ---
-    st.session_state['last_results'] = valid_parlays
-    
-    # --- OUTPUT ---
-    st.divider()
-    if not valid_parlays:
-        st.error("NO_VALID_STRATEGIES_FOUND")
+    if active_df.empty:
+        st.error("NO_ACTIVE_LEGS: Please select at least one leg.")
     else:
-        results = pd.DataFrame(valid_parlays)
-        
-        # Display Results
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            st.markdown("`>> STRATEGY_TABLE`")
-            sort_by = st.selectbox("SORT_BY", ["EV", "WAGER", "PAYOUT", "PROB"], label_visibility="collapsed")
-            results_sorted = results.sort_values(by=sort_by, ascending=False)
-            
-            display = results_sorted.copy()
-            display['LEGS'] = display['LEGS'].apply(lambda x: " + ".join(x))
-            display['WAGER'] = display['WAGER'].apply(format_money)
-            display['PAYOUT'] = display['PAYOUT'].apply(format_money)
-            display['EV'] = display['EV'].apply(format_money)
-            display['ODDS'] = display['ODDS'].apply(lambda x: f"{x:.2f}x")
-            display['PROB'] = display['PROB'].apply(lambda x: f"{x:.1f}%")
-            
-            st.dataframe(display.drop(columns=['RAW_LEGS_DATA']), use_container_width=True, hide_index=True)
+        legs_list = active_df.to_dict('records')
+        valid_parlays = []
+        combo_count = 0
+        stop_execution = False
+        min_dec = american_to_decimal(target_min_odds)
+        max_dec = american_to_decimal(target_max_odds)
 
-        with col2:
-            st.metric("TOTAL_RISK", format_money(results['WAGER'].sum()))
-            st.metric("TOTAL_EXP_VALUE", format_money(results['EV'].sum()))
-
-# --- MONTE CARLO SIMULATOR (NEW) ---
-if 'last_results' in st.session_state and len(st.session_state['last_results']) > 0:
-    st.divider()
-    st.subheader("3.0 // MONTE_CARLO_RISK_SIMULATION")
-    
-    if st.button("🔮 RUN_1000_SIMULATIONS", help="Simulates outcomes based on your confidence %"):
-        parlays = st.session_state['last_results']
-        sim_profits = []
-        
-        # Gather all unique legs involved in the parlays
-        unique_legs = {}
-        for p in parlays:
-            for leg in p['RAW_LEGS_DATA']:
-                unique_legs[leg['Leg Name']] = leg['Est Win %'] / 100.0
-
-        with st.spinner("SIMULATING_TIMELINE..."):
-            for _ in range(1000):
-                # 1. Simulate outcomes for all legs for this run
-                leg_outcomes = {name: random.random() < prob for name, prob in unique_legs.items()}
+        with st.spinner(f"PROCESSING {len(legs_list)} ACTIVE LEGS..."):
+            for r in range(min_legs, max_legs + 1):
+                if stop_execution: break
                 
-                # 2. Check each parlay ticket
-                run_profit = 0
-                for p in parlays:
-                    wager = p['WAGER']
-                    # Check if all legs in this parlay hit
-                    all_hit = all(leg_outcomes[leg['Leg Name']] for leg in p['RAW_LEGS_DATA'])
+                for combo in itertools.combinations(legs_list, r):
+                    groups = [str(x['Group']) for x in combo if str(x['Group']).strip()]
+                    if len(groups) != len(set(groups)): continue 
                     
-                    if all_hit:
-                        run_profit += p['PAYOUT']
-                    else:
-                        run_profit -= wager
-                
-                sim_profits.append(run_profit)
+                    combo_count += 1
+                    if combo_count > max_combos:
+                        stop_execution = True
+                        break
 
-        # --- DISPLAY SIMULATION RESULTS ---
-        sim_df = pd.DataFrame(sim_profits, columns=['Profit'])
+                    dec_total = np.prod([x['Decimal'] for x in combo])
+                    if not (min_dec <= dec_total <= max_dec): continue
+
+                    win_prob = np.prod([x['Est Win %']/100 for x in combo])
+                    kelly_pct = kelly_criterion(dec_total, win_prob * 100, kelly_fraction)
+                    wager = bankroll * kelly_pct
+                    
+                    if min_ev_filter and wager <= 0: continue
+                    
+                    payout = (dec_total * wager) - wager
+                    ev = (win_prob * payout) - ((1 - win_prob) * wager)
+
+                    valid_parlays.append({
+                        "LEGS": [l['Leg Name'] for l in combo],
+                        "ODDS": dec_total,
+                        "PROB": win_prob * 100,
+                        "WAGER": wager,
+                        "PAYOUT": payout,
+                        "EV": ev,
+                        "RAW_LEGS_DATA": combo 
+                    })
         
-        c1, c2, c3 = st.columns(3)
-        c1.metric("WORST_CASE", format_money(min(sim_profits)))
-        c2.metric("AVG_OUTCOME", format_money(np.mean(sim_profits)))
-        c3.metric("BEST_CASE", format_money(max(sim_profits)))
+        # SAVE TO SESSION STATE
+        st.session_state.generated_parlays = valid_parlays
+        st.rerun() # Force Reload to show results
+
+# --- DISPLAY LOGIC (SEPARATED FROM BUTTON) ---
+if len(st.session_state.generated_parlays) > 0:
+    st.divider()
+    results = pd.DataFrame(st.session_state.generated_parlays)
+    
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.markdown("`>> STRATEGY_TABLE`")
+        sort_by = st.selectbox("SORT_BY", ["EV", "WAGER", "PAYOUT", "PROB"], label_visibility="collapsed")
+        results_sorted = results.sort_values(by=sort_by, ascending=False)
         
-        # Histogram
-        chart = alt.Chart(sim_df).mark_bar(color='#00ff41').encode(
-            alt.X("Profit", bin=alt.Bin(maxbins=30), title="Profit/Loss ($)"),
-            y='count()'
-        ).properties(
-            title="Distribution of Outcomes (1000 Runs)",
-            background='transparent'
-        ).configure_axis(
-            labelColor='#e0e0e0',
-            titleColor='#00ff41'
-        ).configure_title(color='#e0e0e0')
+        display = results_sorted.copy()
+        display['LEGS'] = display['LEGS'].apply(lambda x: " + ".join(x))
+        display['WAGER'] = display['WAGER'].apply(format_money)
+        display['PAYOUT'] = display['PAYOUT'].apply(format_money)
+        display['EV'] = display['EV'].apply(format_money)
+        display['ODDS'] = display['ODDS'].apply(lambda x: f"{x:.2f}x")
+        display['PROB'] = display['PROB'].apply(lambda x: f"{x:.1f}%")
         
-        st.altair_chart(chart, use_container_width=True)
+        st.dataframe(display.drop(columns=['RAW_LEGS_DATA']), use_container_width=True, hide_index=True)
+
+    with col2:
+        st.metric("TOTAL_RISK", format_money(results['WAGER'].sum()))
+        st.metric("TOTAL_EXP_VALUE", format_money(results['EV'].sum()))
         
-        # Win Rate of Portfolio
-        profitable_runs = len([x for x in sim_profits if x > 0])
-        st.caption(f"PORTFOLIO_WIN_RATE: {(profitable_runs/1000)*100:.1f}% of simulations ended in profit.")
+        # --- MONTE CARLO ---
+        st.divider()
+        st.subheader("3.0 // RISK_SIM")
+        
+        if st.button("🔮 RUN_1000_SIMULATIONS"):
+            parlays = st.session_state.generated_parlays
+            sim_profits = []
+            
+            unique_legs = {}
+            for p in parlays:
+                for leg in p['RAW_LEGS_DATA']:
+                    unique_legs[leg['Leg Name']] = leg['Est Win %'] / 100.0
+
+            with st.spinner("SIMULATING..."):
+                for _ in range(1000):
+                    leg_outcomes = {name: random.random() < prob for name, prob in unique_legs.items()}
+                    run_profit = 0
+                    for p in parlays:
+                        wager = p['WAGER']
+                        all_hit = all(leg_outcomes[leg['Leg Name']] for leg in p['RAW_LEGS_DATA'])
+                        if all_hit: run_profit += p['PAYOUT']
+                        else: run_profit -= wager
+                    sim_profits.append(run_profit)
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("WORST", format_money(min(sim_profits)))
+            c2.metric("AVG", format_money(np.mean(sim_profits)))
+            c3.metric("BEST", format_money(max(sim_profits)))
+            
+            sim_df = pd.DataFrame(sim_profits, columns=['Profit'])
+            chart = alt.Chart(sim_df).mark_bar(color='#00ff41').encode(
+                alt.X("Profit", bin=alt.Bin(maxbins=30)), y='count()'
+            ).properties(background='transparent').configure_axis(
+                labelColor='#e0e0e0', titleColor='#00ff41'
+            )
+            st.altair_chart(chart, use_container_width=True)
+            
+            profitable = len([x for x in sim_profits if x > 0])
+            st.caption(f"WIN_PROB: {(profitable/1000)*100:.1f}%")
+else:
+    # No results yet
+    pass
