@@ -126,6 +126,37 @@ with st.sidebar:
         st.session_state.input_data = pd.DataFrame(columns=["Active", "Group", "Leg Name", "Odds", "Conf (1-10)"])
         st.rerun()
 
+        # ... inside st.sidebar ...
+
+    st.markdown("---")
+    st.markdown("### > DATA_PERSISTENCE")
+    
+    # DOWNLOAD BUTTON
+    # We convert the dataframe to CSV for the user to download
+    csv = st.session_state.input_data.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="💾 DOWNLOAD_DATABASE (CSV)",
+        data=csv,
+        file_name="parlay_master_list.csv",
+        mime="text/csv",
+    )
+
+    # UPLOAD BUTTON
+    uploaded_file = st.file_uploader("📂 LOAD_DATABASE", type=["csv"])
+    if uploaded_file is not None:
+        try:
+            loaded_df = pd.read_csv(uploaded_file)
+            # Validation: Ensure columns match
+            required_cols = ["Active", "Group", "Leg Name", "Odds", "Conf (1-10)"]
+            if all(col in loaded_df.columns for col in required_cols):
+                st.session_state.input_data = loaded_df
+                st.success("DATABASE_RESTORED")
+                st.rerun()
+            else:
+                st.error("ERROR: INVALID_CSV_FORMAT")
+        except Exception as e:
+            st.error(f"ERROR: {e}")
+
     st.markdown("### > BANKROLL")
     bankroll = st.number_input("TOTAL_BANKROLL ($)", 100.0, 1000000.0, 1000.0)
     kelly_fraction = st.slider("KELLY_FRACT", 0.1, 1.0, 0.25)
