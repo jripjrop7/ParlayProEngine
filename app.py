@@ -7,7 +7,7 @@ import requests
 
 # --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="QUANT_PARLAY_ENGINE_V4", 
+    page_title="QUANT_PARLAY_ENGINE_V6", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -33,12 +33,6 @@ st.markdown("""
     }
     div.stButton > button:hover {
         background-color: #00ff41; color: #000000; box-shadow: 0 0 10px #00ff41;
-    }
-    /* Expander Styling */
-    .streamlit-expanderHeader {
-        background-color: #1a1c24;
-        color: #00ff41;
-        border: 1px solid #333;
     }
     section[data-testid="stSidebar"] { background-color: #111; border-right: 1px solid #333; }
 </style>
@@ -89,6 +83,7 @@ def fetch_fanduel_odds(api_key, sport_key):
                                 leg_name = f"{outcome['name']} (ML)"
                                 price = outcome['price']
                                 new_legs.append({
+                                    "Active": True,  # Default to Checked
                                     "Group": game_group_id,
                                     "Leg Name": leg_name,
                                     "Odds": price,
@@ -109,18 +104,28 @@ with st.sidebar:
         ["americanfootball_nfl", "basketball_nba", "icehockey_nhl", "basketball_ncaab"]
     )
     
-    if st.button("📡 PULL_FANDUEL_LINES"):
+    if st.button("📡 PULL_FANDUEL_LINES (APPEND)"):
         if not api_key:
             st.error("MISSING_API_KEY")
         else:
             with st.spinner("FETCHING_LIVE_ODDS..."):
                 fetched_data = fetch_fanduel_odds(api_key, sport_select)
                 if fetched_data:
-                    st.session_state.input_data = pd.DataFrame(fetched_data)
-                    st.success(f"SUCCESS: LOADED {len(fetched_data)} LINES")
+                    new_df = pd.DataFrame(fetched_data)
+                    # APPEND to existing data instead of overwriting
+                    st.session_state.input_data = pd.concat([st.session_state.input_data, new_df], ignore_index=True)
+                    # Remove Duplicates based on Leg Name
+                    st.session_state.input_data.drop_duplicates(subset=['Leg Name'], keep='last', inplace=True)
+                    st.success(f"ADDED {len(fetched_data)} NEW LINES")
                     st.rerun()
 
     st.markdown("---")
+    
+    # --- CLEAR BUTTON ---
+    if st.button("🗑️ CLEAR_ALL_DATA", help="Wipes the entire table"):
+        st.session_state.input_data = pd.DataFrame(columns=["Active", "Group", "Leg Name", "Odds", "Conf (1-10)"])
+        st.rerun()
+
     st.markdown("### > BANKROLL")
     bankroll = st.number_input("TOTAL_BANKROLL ($)", 100.0, 1000000.0, 1000.0)
     kelly_fraction = st.slider("KELLY_FRACT", 0.1, 1.0, 0.25)
@@ -136,15 +141,15 @@ with st.sidebar:
     max_combos = st.select_slider("MAX_ITERATIONS", options=[1000, 5000, 10000], value=5000)
 
 # --- MAIN APP ---
-st.title("> QUANT_PARLAY_ENGINE_V4")
+st.title("> QUANT_PARLAY_ENGINE_V6")
 
 # Initialize Session State
 if 'input_data' not in st.session_state:
     st.session_state.input_data = pd.DataFrame([
-        {"Group": "", "Leg Name": "Manual Entry 1", "Odds": -110, "Conf (1-10)": 5},
+        {"Active": True, "Group": "", "Leg Name": "Manual Entry 1", "Odds": -110, "Conf (1-10)": 5},
     ])
 
-# --- NEW FEATURE: PROP BUILDER ---
+# --- PROP BUILDER ---
 st.subheader("1.0 // DATA_ENTRY")
 
 with st.expander("➕ OPEN_PROP_BUILDER (Click to Add Custom Bets)"):
@@ -163,6 +168,7 @@ with st.expander("➕ OPEN_PROP_BUILDER (Click to Add Custom Bets)"):
     if st.button("ADD_PROP_TO_TABLE"):
         if new_prop_name:
             new_row = {
+                "Active": True,
                 "Group": new_prop_group, 
                 "Leg Name": new_prop_name, 
                 "Odds": new_prop_odds, 
@@ -181,34 +187,47 @@ with st.expander("➕ OPEN_PROP_BUILDER (Click to Add Custom Bets)"):
 edited_df = st.data_editor(
     st.session_state.input_data, 
     column_config={
+        "Active": st.column_config.CheckboxColumn("USE?", help="Check to include in calculation", width="small"),
         "Group": st.column_config.TextColumn("GRP_ID", width="small", help="Conflict Group"),
         "Leg Name": st.column_config.TextColumn("LEG_ID"),
         "Odds": st.column_config.NumberColumn("ODDS"),
         "Conf (1-10)": st.column_config.NumberColumn("CONF", min_value=1, max_value=10)
     },
     num_rows="dynamic", 
-    use_container_width=True
+    use_container_width=True,
+    key="editor_widget" 
 )
+
+st.session_state.input_data = edited_df
 
 if not edited_df.empty:
     df = edited_df.copy()
-    df['Decimal'] = df['Odds'].apply(american_to_decimal)
-    df['Est Win %'] = df['Conf (1-10)'] * 10 
+    # FILTER: Only process rows where Active is True
+    active_df = df[df["Active"] == True].copy()
+    
+    if active_df.empty:
+        st.warning("NO_ACTIVE_LEGS: Please check the 'USE?' box for at least one leg.")
+        st.stop()
+        
+    active_df['Decimal'] = active_df['Odds'].apply(american_to_decimal)
+    active_df['Est Win %'] = active_df['Conf (1-10)'] * 10 
 else:
+    st.info("TABLE_EMPTY")
     st.stop()
 
 # --- EXECUTION ---
 st.write("") 
 if st.button(">>> GENERATE_OPTIMIZED_HEDGE"):
     
-    legs_list = df.to_dict('records')
+    # Use the ACTIVE dataframe for calculations
+    legs_list = active_df.to_dict('records')
     valid_parlays = []
     combo_count = 0
     stop_execution = False
     min_dec = american_to_decimal(target_min_odds)
     max_dec = american_to_decimal(target_max_odds)
 
-    with st.spinner("PROCESSING_MATRIX..."):
+    with st.spinner(f"PROCESSING {len(legs_list)} ACTIVE LEGS..."):
         for r in range(min_legs, max_legs + 1):
             if stop_execution: break
             
