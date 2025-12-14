@@ -7,7 +7,7 @@ import requests
 
 # --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="QUANT_PARLAY_ENGINE_V7", 
+    page_title="QUANT_PARLAY_ENGINE_V8", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -93,7 +93,7 @@ def fetch_fanduel_odds(api_key, sport_key):
         st.error(f"API Error: {e}")
         return []
 
-# --- INITIALIZE STATE (MOVED TO TOP TO FIX ERROR) ---
+# --- INITIALIZE STATE ---
 if 'input_data' not in st.session_state:
     st.session_state.input_data = pd.DataFrame([
         {"Active": True, "Group": "", "Leg Name": "Manual Entry 1", "Odds": -110, "Conf (1-10)": 5},
@@ -123,11 +123,8 @@ with st.sidebar:
                     st.rerun()
 
     st.markdown("---")
-    
-    # --- DATA PERSISTENCE (SAVE/LOAD) ---
     st.markdown("### > DATA_PERSISTENCE")
     
-    # DOWNLOAD
     csv = st.session_state.input_data.to_csv(index=False).encode('utf-8')
     st.download_button(
         label="💾 DOWNLOAD_DATABASE (CSV)",
@@ -136,7 +133,6 @@ with st.sidebar:
         mime="text/csv",
     )
 
-    # UPLOAD
     uploaded_file = st.file_uploader("📂 LOAD_DATABASE", type=["csv"])
     if uploaded_file is not None:
         try:
@@ -152,7 +148,6 @@ with st.sidebar:
             st.error(f"ERROR: {e}")
 
     st.markdown("---")
-    
     if st.button("🗑️ CLEAR_ALL_DATA"):
         st.session_state.input_data = pd.DataFrame(columns=["Active", "Group", "Leg Name", "Odds", "Conf (1-10)"])
         st.rerun()
@@ -172,7 +167,7 @@ with st.sidebar:
     max_combos = st.select_slider("MAX_ITERATIONS", options=[1000, 5000, 10000], value=5000)
 
 # --- MAIN APP ---
-st.title("> QUANT_PARLAY_ENGINE_V7")
+st.title("> QUANT_PARLAY_ENGINE_V8")
 
 # --- PROP BUILDER ---
 st.subheader("1.0 // DATA_ENTRY")
@@ -208,11 +203,27 @@ with st.expander("➕ OPEN_PROP_BUILDER (Click to Add Custom Bets)"):
         else:
             st.warning("ERROR: NAME_REQUIRED")
 
+# --- CLONE TOOL (NEW) ---
+col_clone, col_spacer = st.columns([1, 4])
+with col_clone:
+    if st.button("👯 CLONE_SELECTED_ROWS", help="Duplicates any row where 'USE?' is checked."):
+        df = st.session_state.input_data.copy()
+        # Find rows where Active is True
+        rows_to_clone = df[df['Active'] == True]
+        
+        if not rows_to_clone.empty:
+            # Append them to the dataframe
+            st.session_state.input_data = pd.concat([df, rows_to_clone], ignore_index=True)
+            st.success(f"CLONED {len(rows_to_clone)} ROWS")
+            st.rerun()
+        else:
+            st.warning("NO_SELECTION: Check the 'USE?' box next to rows you want to clone.")
+
 # --- MAIN TABLE ---
 edited_df = st.data_editor(
     st.session_state.input_data, 
     column_config={
-        "Active": st.column_config.CheckboxColumn("USE?", help="Check to include in calculation", width="small"),
+        "Active": st.column_config.CheckboxColumn("USE?", help="Check to include (or Clone)", width="small"),
         "Group": st.column_config.TextColumn("GRP_ID", width="small", help="Conflict Group"),
         "Leg Name": st.column_config.TextColumn("LEG_ID"),
         "Odds": st.column_config.NumberColumn("ODDS"),
@@ -248,4 +259,75 @@ if st.button(">>> GENERATE_OPTIMIZED_HEDGE"):
     combo_count = 0
     stop_execution = False
     min_dec = american_to_decimal(target_min_odds)
-    max
+    max_dec = american_to_decimal(target_max_odds)
+
+    with st.spinner(f"PROCESSING {len(legs_list)} ACTIVE LEGS..."):
+        for r in range(min_legs, max_legs + 1):
+            if stop_execution: break
+            
+            for combo in itertools.combinations(legs_list, r):
+                groups = [str(x['Group']) for x in combo if str(x['Group']).strip()]
+                if len(groups) != len(set(groups)): continue 
+                
+                combo_count += 1
+                if combo_count > max_combos:
+                    stop_execution = True
+                    break
+
+                dec_total = np.prod([x['Decimal'] for x in combo])
+                if not (min_dec <= dec_total <= max_dec): continue
+
+                win_prob = np.prod([x['Est Win %']/100 for x in combo])
+                kelly_pct = kelly_criterion(dec_total, win_prob * 100, kelly_fraction)
+                wager = bankroll * kelly_pct
+                
+                if min_ev_filter and wager <= 0: continue
+                
+                payout = (dec_total * wager) - wager
+                ev = (win_prob * payout) - ((1 - win_prob) * wager)
+
+                valid_parlays.append({
+                    "LEGS": [l['Leg Name'] for l in combo],
+                    "ODDS": dec_total,
+                    "PROB": win_prob * 100,
+                    "WAGER": wager,
+                    "PAYOUT": payout,
+                    "EV": ev
+                })
+
+    # --- OUTPUT ---
+    st.divider()
+    if not valid_parlays:
+        st.error("NO_VALID_STRATEGIES_FOUND")
+    else:
+        results = pd.DataFrame(valid_parlays)
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            st.markdown("`>> STRATEGY_TABLE`")
+            sort_by = st.selectbox("SORT_BY", ["EV", "WAGER", "PAYOUT", "PROB"], label_visibility="collapsed")
+            results = results.sort_values(by=sort_by, ascending=False)
+            
+            display = results.copy()
+            display['LEGS'] = display['LEGS'].apply(lambda x: " + ".join(x))
+            display['WAGER'] = display['WAGER'].apply(format_money)
+            display['PAYOUT'] = display['PAYOUT'].apply(format_money)
+            display['EV'] = display['EV'].apply(format_money)
+            display['ODDS'] = display['ODDS'].apply(lambda x: f"{x:.2f}x")
+            display['PROB'] = display['PROB'].apply(lambda x: f"{x:.1f}%")
+            
+            st.dataframe(display, use_container_width=True, hide_index=True)
+            
+        with col2:
+            st.markdown("`>> EXPOSURE_MAP`")
+            flat_legs = [leg for sub in results['LEGS'] for leg in sub]
+            counts = pd.Series(flat_legs).value_counts().reset_index()
+            counts.columns = ['LEG', 'COUNT']
+            
+            c = alt.Chart(counts).mark_bar(color='#00ff41').encode(
+                x='COUNT', y=alt.Y('LEG', sort='-x')
+            ).configure_view(strokeWidth=0).properties(background='transparent')
+            st.altair_chart(c, use_container_width=True)
+            
+            st.metric("TOTAL_RISK", format_money(results['WAGER'].sum()))
+            st.metric("TOTAL_EXP_VALUE", format_money(results['EV'].sum()))
