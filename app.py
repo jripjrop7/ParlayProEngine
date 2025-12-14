@@ -8,7 +8,7 @@ import random
 
 # --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="QUANT_PARLAY_ENGINE_V11", 
+    page_title="QUANT_PARLAY_ENGINE_V13", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -84,7 +84,8 @@ def fetch_fanduel_odds(api_key, sport_key):
                                 price = outcome['price']
                                 new_legs.append({
                                     "Active": True,
-                                    "Group": game_group_id,
+                                    "Excl Group": game_group_id, # Default API group is Exclusion (can't bet both sides)
+                                    "Link Group": "", # User must manually add link groups for correlation
                                     "Leg Name": leg_name,
                                     "Odds": price,
                                     "Conf (1-10)": 5 
@@ -97,7 +98,9 @@ def fetch_fanduel_odds(api_key, sport_key):
 # --- INITIALIZE STATE ---
 if 'input_data' not in st.session_state:
     st.session_state.input_data = pd.DataFrame([
-        {"Active": True, "Group": "", "Leg Name": "Manual Entry 1", "Odds": -110, "Conf (1-10)": 5},
+        {"Active": True, "Excl Group": "A", "Link Group": "KC", "Leg Name": "KC Chiefs ML", "Odds": -200, "Conf (1-10)": 8},
+        {"Active": True, "Excl Group": "A", "Link Group": "", "Leg Name": "KC Chiefs -3", "Odds": -110, "Conf (1-10)": 7},
+        {"Active": True, "Excl Group": "", "Link Group": "KC", "Leg Name": "Mahomes 2+ TD", "Odds": -150, "Conf (1-10)": 9},
     ])
     
 if 'generated_parlays' not in st.session_state:
@@ -141,26 +144,32 @@ with st.sidebar:
     if uploaded_file is not None:
         try:
             loaded_df = pd.read_csv(uploaded_file)
-            required_cols = ["Active", "Group", "Leg Name", "Odds", "Conf (1-10)"]
-            if all(col in loaded_df.columns for col in required_cols):
-                st.session_state.input_data = loaded_df
-                st.success("DATABASE_RESTORED")
-                st.rerun()
-            else:
-                st.error("ERROR: INVALID_CSV_FORMAT")
+            # Check for new columns compatibility
+            if "Link Group" not in loaded_df.columns:
+                loaded_df["Link Group"] = "" # Add column if loading old CSV
+            if "Excl Group" not in loaded_df.columns and "Group" in loaded_df.columns:
+                loaded_df.rename(columns={"Group": "Excl Group"}, inplace=True)
+
+            st.session_state.input_data = loaded_df
+            st.success("DATABASE_RESTORED")
+            st.rerun()
         except Exception as e:
             st.error(f"ERROR: {e}")
 
     st.markdown("---")
     if st.button("🗑️ CLEAR_ALL_DATA"):
-        st.session_state.input_data = pd.DataFrame(columns=["Active", "Group", "Leg Name", "Odds", "Conf (1-10)"])
+        st.session_state.input_data = pd.DataFrame(columns=["Active", "Excl Group", "Link Group", "Leg Name", "Odds", "Conf (1-10)"])
         st.session_state.generated_parlays = []
         st.rerun()
 
-    st.markdown("### > BANKROLL")
+    st.markdown("### > BANKROLL_LOGIC")
     bankroll = st.number_input("TOTAL_BANKROLL ($)", 100.0, 1000000.0, 1000.0)
     kelly_fraction = st.slider("KELLY_FRACT", 0.1, 1.0, 0.25)
     
+    st.markdown("### > CORRELATION_MATRIX")
+    sgp_mode = st.checkbox("ENABLE_CORRELATION_BOOST", value=True, help="If checked, legs sharing a LINK GROUP get a win % boost.")
+    correlation_boost = st.slider("LINK_BOOST_PCT (%)", 0, 50, 15, help="Percentage to boost win probability for linked legs.")
+
     st.markdown("### > PARLAY_SPECS")
     min_legs = st.number_input("MIN_LEGS", 2, 12, 3)
     max_legs = st.number_input("MAX_LEGS", 2, 15, 4)
@@ -172,29 +181,32 @@ with st.sidebar:
     max_combos = st.select_slider("MAX_ITERATIONS", options=[1000, 5000, 10000], value=5000)
 
 # --- MAIN APP ---
-st.title("> QUANT_PARLAY_ENGINE_V11")
+st.title("> QUANT_PARLAY_ENGINE_V13")
 
 # --- PROP BUILDER ---
 st.subheader("1.0 // DATA_ENTRY")
 
 with st.expander("➕ OPEN_PROP_BUILDER (Click to Add Custom Bets)"):
     st.markdown("`>> MANUAL_OVERRIDE_PROTOCOL`")
-    c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
+    c1, c2, c3, c4, c5 = st.columns([2, 1, 1, 1, 1])
     
     with c1:
         new_prop_name = st.text_input("PROP_NAME", placeholder="e.g. LeBron Over 25.5 Pts")
     with c2:
-        new_prop_group = st.text_input("GROUP_ID", placeholder="Optional (Conflict)")
+        new_excl_group = st.text_input("⛔ EXCL_ID", placeholder="Conflict ID")
     with c3:
-        new_prop_odds = st.number_input("ODDS (AMER)", value=-110, step=10)
+        new_link_group = st.text_input("🔗 LINK_ID", placeholder="Correlation ID")
     with c4:
+        new_prop_odds = st.number_input("ODDS (AMER)", value=-110, step=10)
+    with c5:
         new_prop_conf = st.slider("CONFIDENCE", 1, 10, 5)
         
     if st.button("ADD_PROP_TO_TABLE"):
         if new_prop_name:
             new_row = {
                 "Active": True,
-                "Group": new_prop_group, 
+                "Excl Group": new_excl_group, 
+                "Link Group": new_link_group,
                 "Leg Name": new_prop_name, 
                 "Odds": new_prop_odds, 
                 "Conf (1-10)": new_prop_conf
@@ -208,7 +220,7 @@ with st.expander("➕ OPEN_PROP_BUILDER (Click to Add Custom Bets)"):
         else:
             st.warning("ERROR: NAME_REQUIRED")
 
-# --- ALPHA HUNTER VISUALIZER (FIXED) ---
+# --- ALPHA HUNTER VISUALIZER ---
 if not st.session_state.input_data.empty:
     with st.expander("📈 MARKET_ANALYSIS (Alpha Hunter)"):
         plot_data = st.session_state.input_data.copy()
@@ -222,28 +234,22 @@ if not st.session_state.input_data.empty:
             plot_data['Edge'] = plot_data['My_Prob'] - plot_data['Implied_Prob']
             plot_data['Color'] = plot_data['Edge'].apply(lambda x: '#00ff41' if x > 0 else '#ff4b4b')
             
-            # 1. Scatter Chart (No Properties yet)
             c = alt.Chart(plot_data).mark_circle(size=100).encode(
-                x=alt.X('Implied_Prob', title='Bookmaker Implied Probability (%)', scale=alt.Scale(domain=[0, 100])),
+                x=alt.X('Implied_Prob', title='Bookmaker Implied Prob (%)', scale=alt.Scale(domain=[0, 100])),
                 y=alt.Y('My_Prob', title='My Confidence (%)', scale=alt.Scale(domain=[0, 100])),
                 color=alt.Color('Color', scale=None),
                 tooltip=['Leg Name', 'Odds', 'Edge']
             )
             
-            # 2. Diagonal Line (Separate Data)
             line = alt.Chart(pd.DataFrame({'x': [0, 100], 'y': [0, 100]})).mark_line(
                 color='#666', strokeDash=[5, 5]
             ).encode(x='x', y='y')
             
-            # 3. Combine -> Then Add Properties (Fixes TypeError)
             final_chart = (c + line).properties(
-                title="Your Edge vs. The Bookie",
-                height=300,
-                background='transparent'
+                title="Edge Visualization", height=300, background='transparent'
             ).interactive()
             
             st.altair_chart(final_chart, use_container_width=True)
-            st.caption("DOTS ABOVE DOTTED LINE = +EV (Good Bets). DOTS BELOW = -EV (Bad Bets).")
 
 # --- CLONE TOOL ---
 col_clone, col_spacer = st.columns([1, 4])
@@ -255,15 +261,14 @@ with col_clone:
             st.session_state.input_data = pd.concat([df, rows_to_clone], ignore_index=True)
             st.success(f"CLONED {len(rows_to_clone)} ROWS")
             st.rerun()
-        else:
-            st.warning("NO_SELECTION")
 
 # --- MAIN TABLE ---
 edited_df = st.data_editor(
     st.session_state.input_data, 
     column_config={
-        "Active": st.column_config.CheckboxColumn("USE?", help="Check to include (or Clone)", width="small"),
-        "Group": st.column_config.TextColumn("GRP_ID", width="small", help="Conflict Group"),
+        "Active": st.column_config.CheckboxColumn("USE?", help="Include?", width="small"),
+        "Excl Group": st.column_config.TextColumn("⛔ EXCL", width="small", help="CONFLICT: Same ID never combined."),
+        "Link Group": st.column_config.TextColumn("🔗 LINK", width="small", help="CORRELATION: Same ID gets boosted."),
         "Leg Name": st.column_config.TextColumn("LEG_ID"),
         "Odds": st.column_config.NumberColumn("ODDS"),
         "Conf (1-10)": st.column_config.NumberColumn("CONF", min_value=1, max_value=10)
@@ -278,11 +283,8 @@ st.session_state.input_data = edited_df
 if not edited_df.empty:
     df = edited_df.copy()
     active_df = df[df["Active"] == True].copy()
-    
-    # --- CALCULATION LOGIC RESTORED ---
     active_df['Decimal'] = active_df['Odds'].apply(american_to_decimal)
     active_df['Est Win %'] = active_df['Conf (1-10)'] * 10 
-    # ----------------------------------
 else:
     st.info("TABLE_EMPTY")
     st.stop()
@@ -292,7 +294,7 @@ st.write("")
 if st.button(">>> GENERATE_OPTIMIZED_HEDGE"):
     
     if active_df.empty:
-        st.error("NO_ACTIVE_LEGS: Please select at least one leg.")
+        st.error("NO_ACTIVE_LEGS")
     else:
         legs_list = active_df.to_dict('records')
         valid_parlays = []
@@ -306,8 +308,18 @@ if st.button(">>> GENERATE_OPTIMIZED_HEDGE"):
                 if stop_execution: break
                 
                 for combo in itertools.combinations(legs_list, r):
-                    groups = [str(x['Group']) for x in combo if str(x['Group']).strip()]
-                    if len(groups) != len(set(groups)): continue 
+                    
+                    # 1. HARD RULE: EXCLUSION GROUP
+                    excl_groups = [str(x['Excl Group']) for x in combo if str(x['Excl Group']).strip()]
+                    if len(excl_groups) != len(set(excl_groups)): continue # Conflict found, skip
+
+                    # 2. SOFT RULE: LINK GROUP (BOOST)
+                    is_correlated = False
+                    if sgp_mode:
+                        link_groups = [str(x['Link Group']) for x in combo if str(x['Link Group']).strip()]
+                        # If we have duplicates in Link Group, it means we have a correlation
+                        if len(link_groups) != len(set(link_groups)): 
+                            is_correlated = True
                     
                     combo_count += 1
                     if combo_count > max_combos:
@@ -317,23 +329,33 @@ if st.button(">>> GENERATE_OPTIMIZED_HEDGE"):
                     dec_total = np.prod([x['Decimal'] for x in combo])
                     if not (min_dec <= dec_total <= max_dec): continue
 
-                    win_prob = np.prod([x['Est Win %']/100 for x in combo])
-                    kelly_pct = kelly_criterion(dec_total, win_prob * 100, kelly_fraction)
+                    # Calculate Probability
+                    raw_win_prob = np.prod([x['Est Win %']/100 for x in combo])
+                    
+                    # APPLY BOOST
+                    if is_correlated:
+                        boost_factor = 1 + (correlation_boost / 100)
+                        final_win_prob = min(0.99, raw_win_prob * boost_factor)
+                    else:
+                        final_win_prob = raw_win_prob
+
+                    kelly_pct = kelly_criterion(dec_total, final_win_prob * 100, kelly_fraction)
                     wager = bankroll * kelly_pct
                     
                     if min_ev_filter and wager <= 0: continue
                     
                     payout = (dec_total * wager) - wager
-                    ev = (win_prob * payout) - ((1 - win_prob) * wager)
+                    ev = (final_win_prob * payout) - ((1 - final_win_prob) * wager)
 
                     valid_parlays.append({
                         "LEGS": [l['Leg Name'] for l in combo],
                         "ODDS": dec_total,
-                        "PROB": win_prob * 100,
+                        "PROB": final_win_prob * 100,
                         "WAGER": wager,
                         "PAYOUT": payout,
                         "EV": ev,
-                        "RAW_LEGS_DATA": combo 
+                        "RAW_LEGS_DATA": combo,
+                        "BOOST": "🚀" if is_correlated else ""
                     })
         
         st.session_state.generated_parlays = valid_parlays
@@ -358,6 +380,7 @@ if len(st.session_state.generated_parlays) > 0:
         display['ODDS'] = display['ODDS'].apply(lambda x: f"{x:.2f}x")
         display['PROB'] = display['PROB'].apply(lambda x: f"{x:.1f}%")
         
+        # We display the BOOST column to show which ones got the juice
         st.dataframe(display.drop(columns=['RAW_LEGS_DATA']), use_container_width=True, hide_index=True)
 
     with col2:
