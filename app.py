@@ -87,6 +87,7 @@ def american_to_decimal(odds):
 
 def format_money(val):
     return f"${val:,.2f}"
+
 def kelly_criterion(decimal_odds, win_prob_percent, fractional_kelly=0.25):
     """
     Returns % of bankroll to wager.
