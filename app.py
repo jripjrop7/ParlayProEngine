@@ -8,7 +8,7 @@ import random
 
 # --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="QUANT_PARLAY_ENGINE_V16", 
+    page_title="QUANT_PARLAY_ENGINE_V17", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -187,10 +187,12 @@ with st.sidebar:
     target_min_odds = st.number_input("MIN_ODDS (+)", 100, 100000, 100)
     target_max_odds = st.number_input("MAX_ODDS (+)", 100, 500000, 10000)
     min_ev_filter = st.checkbox("FILTER_NEG_EV", value=True)
-    max_combos = st.select_slider("MAX_ITERATIONS", options=[1000, 5000, 10000], value=5000)
+    
+    # --- UPDATED: ITERATIONS INPUT ---
+    max_combos = st.number_input("MAX_ITERATIONS", min_value=1, max_value=1000000, value=5000, step=100)
 
 # --- MAIN APP LAYOUT ---
-st.title("> QUANT_PARLAY_ENGINE_V16")
+st.title("> QUANT_PARLAY_ENGINE_V17")
 
 # --- TABS SYSTEM ---
 tab_build, tab_scenarios, tab_hedge, tab_analysis = st.tabs(["🏗️ BUILDER", "🧪 SCENARIOS", "🛡️ HEDGE_CALC", "📊 ANALYSIS"])
@@ -294,7 +296,7 @@ with tab_build:
                         ev = (final_win_prob * payout) - ((1 - final_win_prob) * wager)
 
                         valid_parlays.append({
-                            "BET?": True, # DEFAULT ALL TO TRUE
+                            "BET?": False, # --- UPDATED: DEFAULT TO FALSE ---
                             "LEGS": [l['Leg Name'] for l in combo],
                             "ODDS": dec_total,
                             "PROB": final_win_prob * 100,
@@ -308,49 +310,36 @@ with tab_build:
             st.session_state.generated_parlays = valid_parlays
             st.rerun()
 
-    # --- RESULTS DISPLAY (NOW EDITABLE) ---
+    # --- RESULTS DISPLAY ---
     if len(st.session_state.generated_parlays) > 0:
         st.divider()
-        st.markdown("### 📋 GENERATED_PORTFOLIO (Check box to include in Analysis)")
+        st.markdown("### 📋 GENERATED_PORTFOLIO")
         
-        # Convert list to DF
         results_df = pd.DataFrame(st.session_state.generated_parlays)
         
-        # We need to sort it initially, but if we just sort the DF, it might mess up the editor state
-        # So we usually just display it.
-        
-        # Prepare for Editor
         display_df = results_df.copy()
         display_df['LEGS'] = display_df['LEGS'].apply(lambda x: " + ".join(x))
         
-        # EDITABLE DATAFRAME FOR SELECTION
         portfolio_edits = st.data_editor(
             display_df,
             column_config={
-                "BET?": st.column_config.CheckboxColumn("PLACED?", help="Only checked rows are used in Scenarios/Sims"),
+                "BET?": st.column_config.CheckboxColumn("PLACED?", help="Check to mark as placed"),
                 "LEGS": st.column_config.TextColumn("PARLAY LEGS", width="large"),
                 "WAGER": st.column_config.NumberColumn("KELLY ($)", format="$%.2f"),
                 "PAYOUT": st.column_config.NumberColumn("PAYOUT ($)", format="$%.2f"),
                 "EV": st.column_config.NumberColumn("EV ($)", format="$%.2f"),
                 "ODDS": st.column_config.NumberColumn("DEC ODDS", format="%.2f"),
                 "PROB": st.column_config.NumberColumn("WIN %", format="%.1f%%"),
-                "RAW_LEGS_DATA": None # Hide raw data
+                "RAW_LEGS_DATA": None 
             },
             hide_index=True,
             use_container_width=True,
             key="portfolio_editor"
         )
         
-        # SYNC SELECTION BACK TO STATE
-        # We iterate through the original list and update the "BET?" status based on the editor
-        # Note: data_editor returns a new DF. We must map it back.
-        # Simplest way: The index of display_df matches st.session_state.generated_parlays
-        
-        # Update the master list 'BET?' status based on the editor
         for index, row in portfolio_edits.iterrows():
             st.session_state.generated_parlays[index]['BET?'] = row['BET?']
 
-        # Total Stats (Only counting Checked rows)
         active_portfolio = [p for p in st.session_state.generated_parlays if p['BET?']]
         total_risk = sum(p['WAGER'] for p in active_portfolio)
         total_ev = sum(p['EV'] for p in active_portfolio)
@@ -367,13 +356,11 @@ with tab_scenarios:
     st.header("🧪 SCENARIO_STRESS_TESTER")
     st.caption("Only analyzes tickets marked as 'PLACED?' in the Builder tab.")
     
-    # Filter for Checked Parlays Only
-    active_parlays = [p for p in st.session_state.generated_parlays if p.get('BET?', True)]
+    active_parlays = [p for p in st.session_state.generated_parlays if p.get('BET?', False)]
     
     if len(active_parlays) == 0:
         st.warning("NO ACTIVE BETS SELECTED. Go to Builder and check 'PLACED?'.")
     else:
-        # Get Unique Legs from ACTIVE parlays only
         unique_legs_set = set()
         for p in active_parlays:
             for leg in p['RAW_LEGS_DATA']:
@@ -453,7 +440,7 @@ with tab_hedge:
 with tab_analysis:
     st.header("📊 MARKET_INTELLIGENCE")
     
-    # 1. Alpha Hunter (Same as before)
+    # 1. Alpha Hunter
     if not st.session_state.input_data.empty:
         with st.expander("📈 INPUT_ANALYSIS (Alpha Hunter)"):
             plot_data = st.session_state.input_data.copy()
@@ -473,7 +460,7 @@ with tab_analysis:
                 st.altair_chart((c + line).interactive(), use_container_width=True)
 
     # 2. Monte Carlo (FILTERED)
-    active_parlays = [p for p in st.session_state.generated_parlays if p.get('BET?', True)]
+    active_parlays = [p for p in st.session_state.generated_parlays if p.get('BET?', False)]
     
     if len(active_parlays) > 0:
         st.divider()
