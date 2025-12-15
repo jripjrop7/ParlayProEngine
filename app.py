@@ -9,7 +9,7 @@ from datetime import datetime
 
 # --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="QUANT_PARLAY_ENGINE_V22", 
+    page_title="QUANT_PARLAY_ENGINE_V23", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -110,24 +110,16 @@ def update_main_data():
         st.session_state.input_data = st.session_state["editor_widget"]
 
 def update_portfolio_data():
-    # Sync edits from table back to state
     if st.session_state["portfolio_editor"] is not None:
         edited_df = st.session_state["portfolio_editor"]
-        
-        # Iterate and update specific fields
         for index, row in edited_df.iterrows():
             if index < len(st.session_state.generated_parlays):
-                # Update Place Status
                 st.session_state.generated_parlays[index]['BET?'] = row['BET?']
-                
-                # Update Custom Wager
                 new_wager = row['MY_WAGER']
                 st.session_state.generated_parlays[index]['MY_WAGER'] = new_wager
                 
-                # Recalculate Payout & EV based on NEW Wager
                 dec_odds = st.session_state.generated_parlays[index]['ODDS']
                 prob = st.session_state.generated_parlays[index]['PROB'] / 100
-                
                 new_payout = (dec_odds * new_wager) - new_wager
                 new_ev = (prob * new_payout) - ((1 - prob) * new_wager)
                 
@@ -153,55 +145,90 @@ with st.sidebar:
     st.title("/// SYSTEM_CONTROLS")
     
     with st.expander("⚖️ FAIR_VALUE_CALC (Vig Remover)"):
-        fv_odds_1 = st.number_input("Side A Odds", value=-110, step=5)
-        fv_odds_2 = st.number_input("Side B Odds", value=-110, step=5)
+        fv_odds_1 = st.number_input("Side A Odds (e.g. -110)", value=-110, step=5)
+        fv_odds_2 = st.number_input("Side B Odds (e.g. -110)", value=-110, step=5)
         if st.button("CALC_TRUE_PROB"):
-            dec1, dec2 = american_to_decimal(fv_odds_1), american_to_decimal(fv_odds_2)
-            imp1, imp2 = (1/dec1), (1/dec2)
-            st.metric("Side A True Win %", f"{(imp1 / (imp1 + imp2) * 100):.1f}%")
+            dec1 = american_to_decimal(fv_odds_1)
+            dec2 = american_to_decimal(fv_odds_2)
+            imp1 = (1/dec1)
+            imp2 = (1/dec2)
+            total_imp = imp1 + imp2 
+            true_prob1 = (imp1 / total_imp) * 100
+            st.metric("Side A True Win %", f"{true_prob1:.1f}%")
 
     st.markdown("---")
     st.markdown("### > LIVE_DATA_FEED")
-    api_key = st.text_input("API_KEY", type="password")
-    sport_select = st.selectbox("MARKET", ["americanfootball_nfl", "basketball_nba", "icehockey_nhl", "basketball_ncaab"])
+    api_key = st.text_input("API_KEY (The Odds API)", type="password")
+    sport_select = st.selectbox("TARGET_MARKET", 
+        ["americanfootball_nfl", "basketball_nba", "icehockey_nhl", "basketball_ncaab"]
+    )
     
     if st.button("📡 PULL_FANDUEL_LINES (APPEND)"):
-        if not api_key: st.error("MISSING_API_KEY")
+        if not api_key:
+            st.error("MISSING_API_KEY")
         else:
-            with st.spinner("FETCHING..."):
-                fetched = fetch_fanduel_odds(api_key, sport_select)
-                if fetched:
-                    st.session_state.input_data = pd.concat([st.session_state.input_data, pd.DataFrame(fetched)], ignore_index=True)
+            with st.spinner("FETCHING_LIVE_ODDS..."):
+                fetched_data = fetch_fanduel_odds(api_key, sport_select)
+                if fetched_data:
+                    new_df = pd.DataFrame(fetched_data)
+                    st.session_state.input_data = pd.concat([st.session_state.input_data, new_df], ignore_index=True)
                     st.session_state.input_data.drop_duplicates(subset=['Leg Name'], keep='last', inplace=True)
-                    st.success(f"ADDED {len(fetched)} LINES")
+                    st.success(f"ADDED {len(fetched_data)} NEW LINES")
                     st.rerun()
 
     st.markdown("---")
     st.markdown("### > DATA_PERSISTENCE")
     
     if isinstance(st.session_state.input_data, pd.DataFrame):
-        st.download_button("💾 SAVE_INPUTS", st.session_state.input_data.to_csv(index=False).encode('utf-8'), "parlay_inputs.csv", "text/csv")
+        csv_input = st.session_state.input_data.to_csv(index=False).encode('utf-8')
+        st.download_button("💾 SAVE_INPUTS (CSV)", csv_input, "parlay_inputs.csv", "text/csv")
+    
     if isinstance(st.session_state.bet_history, pd.DataFrame):
-        st.download_button("💾 SAVE_HISTORY", st.session_state.bet_history.to_csv(index=False).encode('utf-8'), "bet_ledger.csv", "text/csv")
+        csv_hist = st.session_state.bet_history.to_csv(index=False).encode('utf-8')
+        st.download_button("💾 SAVE_HISTORY (CSV)", csv_hist, "bet_ledger.csv", "text/csv")
 
-    up_in = st.file_uploader("📂 LOAD_INPUTS", type=["csv"])
-    if up_in:
-        try: 
-            st.session_state.input_data = pd.read_csv(up_in)
-            st.success("LOADED")
+    uploaded_file = st.file_uploader("📂 LOAD_INPUTS", type=["csv"])
+    if uploaded_file is not None:
+        try:
+            loaded_df = pd.read_csv(uploaded_file)
+            
+            # --- DATA SANITIZER (THE FIX FOR THE ERROR) ---
+            # Ensure required columns exist
+            if "Link Group" not in loaded_df.columns: loaded_df["Link Group"] = ""
+            if "Excl Group" not in loaded_df.columns and "Group" in loaded_df.columns:
+                loaded_df.rename(columns={"Group": "Excl Group"}, inplace=True)
+            
+            # Force String types for text columns (Replace NaN with "")
+            loaded_df["Link Group"] = loaded_df["Link Group"].fillna("").astype(str)
+            loaded_df["Excl Group"] = loaded_df["Excl Group"].fillna("").astype(str)
+            loaded_df["Leg Name"] = loaded_df["Leg Name"].fillna("Unknown").astype(str)
+            
+            # Force Boolean for Active
+            if "Active" in loaded_df.columns:
+                loaded_df["Active"] = loaded_df["Active"].astype(bool)
+            else:
+                loaded_df["Active"] = True
+                
+            # Force Numeric
+            loaded_df["Odds"] = pd.to_numeric(loaded_df["Odds"], errors='coerce').fillna(-110)
+            loaded_df["Conf (1-10)"] = pd.to_numeric(loaded_df["Conf (1-10)"], errors='coerce').fillna(5)
+            # -----------------------------------------------
+
+            st.session_state.input_data = loaded_df
+            st.success("DATABASE_RESTORED")
             st.rerun()
-        except: st.error("ERR")
+        except Exception as e: st.error(f"ERROR: {e}")
 
-    up_hist = st.file_uploader("📂 LOAD_HISTORY", type=["csv"])
-    if up_hist:
-        try: 
-            st.session_state.bet_history = pd.read_csv(up_hist)
-            st.success("LOADED")
+    uploaded_hist = st.file_uploader("📂 LOAD_HISTORY", type=["csv"])
+    if uploaded_hist is not None:
+        try:
+            st.session_state.bet_history = pd.read_csv(uploaded_hist)
+            st.success("LEDGER RESTORED")
             st.rerun()
         except: pass
 
     st.markdown("---")
-    if st.button("🗑️ CLEAR_ALL"):
+    if st.button("🗑️ CLEAR_ALL_DATA"):
         st.session_state.input_data = pd.DataFrame(columns=["Active", "Excl Group", "Link Group", "Leg Name", "Odds", "Conf (1-10)"])
         st.session_state.generated_parlays = []
         st.rerun()
@@ -226,36 +253,47 @@ with st.sidebar:
     target_min_odds = st.number_input("MIN_ODDS (+)", 100, 100000, 100)
     target_max_odds = st.number_input("MAX_ODDS (+)", 100, 500000, 10000)
     min_ev_filter = st.checkbox("FILTER_NEG_EV", value=True)
-    max_combos = st.number_input("MAX_ITER", 1, 1000000, 5000, 100)
+    max_combos = st.number_input("MAX_ITERATIONS", min_value=1, max_value=1000000, value=5000, step=100)
 
-# --- MAIN APP ---
-st.title("> QUANT_PARLAY_ENGINE_V22")
-tab_build, tab_scenarios, tab_hedge, tab_analysis, tab_ledger = st.tabs(["🏗️ BUILDER", "🧪 SCENARIOS", "🛡️ HEDGE", "📊 ANALYSIS", "📜 LEDGER"])
+# --- MAIN APP LAYOUT ---
+st.title("> QUANT_PARLAY_ENGINE_V23")
 
-# --- BUILDER TAB ---
+# --- TABS SYSTEM ---
+tab_build, tab_scenarios, tab_hedge, tab_analysis, tab_ledger = st.tabs([
+    "🏗️ BUILDER", "🧪 SCENARIOS", "🛡️ HEDGE_CALC", "📊 ANALYSIS", "📜 LEDGER"
+])
+
+# ==========================================
+# TAB 1: BUILDER
+# ==========================================
 with tab_build:
-    with st.expander("➕ OPEN_PROP_BUILDER"):
+    with st.expander("➕ OPEN_PROP_BUILDER (Click to Add Custom Bets)"):
+        st.markdown("`>> MANUAL_OVERRIDE_PROTOCOL`")
         c1, c2, c3, c4, c5 = st.columns([2, 1, 1, 1, 1])
-        with c1: new_prop_name = st.text_input("PROP_NAME")
-        with c2: new_excl = st.text_input("⛔ EXCL_ID")
-        with c3: new_link = st.text_input("🔗 LINK_ID")
-        with c4: new_odds = st.number_input("ODDS", -110, step=10)
-        with c5: new_conf = st.slider("CONF", 1, 10, 5)
-        if st.button("ADD_PROP"):
-            new_row = {"Active": True, "Excl Group": new_excl, "Link Group": new_link, "Leg Name": new_prop_name, "Odds": new_odds, "Conf (1-10)": new_conf}
-            st.session_state.input_data = pd.concat([st.session_state.input_data, pd.DataFrame([new_row])], ignore_index=True)
-            st.success("ADDED")
-            st.rerun()
+        with c1: new_prop_name = st.text_input("PROP_NAME", placeholder="e.g. LeBron Over 25.5 Pts")
+        with c2: new_excl_group = st.text_input("⛔ EXCL_ID", placeholder="Conflict ID")
+        with c3: new_link_group = st.text_input("🔗 LINK_ID", placeholder="Correlation ID")
+        with c4: new_prop_odds = st.number_input("ODDS (AMER)", value=-110, step=10)
+        with c5: new_prop_conf = st.slider("CONFIDENCE", 1, 10, 5)
+        if st.button("ADD_PROP_TO_TABLE"):
+            if new_prop_name:
+                new_row = {"Active": True, "Excl Group": new_excl_group, "Link Group": new_link_group,
+                    "Leg Name": new_prop_name, "Odds": new_prop_odds, "Conf (1-10)": new_prop_conf}
+                st.session_state.input_data = pd.concat([st.session_state.input_data, pd.DataFrame([new_row])], ignore_index=True)
+                st.success(f"ADDED: {new_prop_name}")
+                st.rerun()
 
-    if st.button("👯 CLONE_SELECTED"):
-        df = st.session_state.input_data.copy()
-        clones = df[df['Active'] == True]
-        if not clones.empty:
-            st.session_state.input_data = pd.concat([df, clones], ignore_index=True)
-            st.success(f"CLONED {len(clones)}")
-            st.rerun()
+    col_clone, col_spacer = st.columns([1, 4])
+    with col_clone:
+        if st.button("👯 CLONE_SELECTED_ROWS"):
+            df = st.session_state.input_data.copy()
+            rows_to_clone = df[df['Active'] == True]
+            if not rows_to_clone.empty:
+                st.session_state.input_data = pd.concat([df, rows_to_clone], ignore_index=True)
+                st.success(f"CLONED {len(rows_to_clone)} ROWS")
+                st.rerun()
 
-    # Main Table
+    # --- MAIN TABLE (SAFETY CHECKED) ---
     if not isinstance(st.session_state.input_data, pd.DataFrame):
          st.session_state.input_data = pd.DataFrame(columns=["Active", "Excl Group", "Link Group", "Leg Name", "Odds", "Conf (1-10)"])
 
@@ -272,17 +310,14 @@ with tab_build:
         num_rows="dynamic", width="stretch", key="editor_widget", on_change=update_main_data  
     )
 
-    # Manual Sync Check
-    if not edited_df.equals(st.session_state.input_data):
-        st.session_state.input_data = edited_df
-        st.rerun()
-
     if not st.session_state.input_data.empty:
         df = st.session_state.input_data.copy()
         active_df = df[df["Active"] == True].copy()
         active_df['Decimal'] = active_df['Odds'].apply(american_to_decimal)
         active_df['Est Win %'] = active_df['Conf (1-10)'] * 10 
-    else: st.stop()
+    else:
+        st.info("TABLE_EMPTY")
+        st.stop()
 
     st.write("") 
     if st.button(">>> GENERATE_OPTIMIZED_HEDGE"):
@@ -291,62 +326,62 @@ with tab_build:
             legs_list = active_df.to_dict('records')
             valid_parlays = []
             combo_count = 0
-            stop = False
-            min_dec, max_dec = american_to_decimal(target_min_odds), american_to_decimal(target_max_odds)
+            stop_execution = False
+            min_dec = american_to_decimal(target_min_odds)
+            max_dec = american_to_decimal(target_max_odds)
 
-            with st.spinner("PROCESSING..."):
+            with st.spinner(f"PROCESSING {len(legs_list)} ACTIVE LEGS..."):
                 for r in range(min_legs, max_legs + 1):
-                    if stop: break
+                    if stop_execution: break
                     for combo in itertools.combinations(legs_list, r):
-                        excl = [str(x['Excl Group']) for x in combo if str(x['Excl Group']).strip()]
-                        if len(excl) != len(set(excl)): continue
+                        excl_groups = [str(x['Excl Group']) for x in combo if str(x['Excl Group']).strip()]
+                        if len(excl_groups) != len(set(excl_groups)): continue
 
-                        is_corr = False
+                        is_correlated = False
                         if sgp_mode:
-                            links = [str(x['Link Group']) for x in combo if str(x['Link Group']).strip()]
-                            if len(links) != len(set(links)): is_corr = True
+                            link_groups = [str(x['Link Group']) for x in combo if str(x['Link Group']).strip()]
+                            if len(link_groups) != len(set(link_groups)): is_correlated = True
                         
                         combo_count += 1
-                        if combo_count > max_combos: stop = True; break
+                        if combo_count > max_combos: stop_execution = True; break
 
                         dec_total = np.prod([x['Decimal'] for x in combo])
                         if not (min_dec <= dec_total <= max_dec): continue
 
-                        raw_prob = np.prod([x['Est Win %']/100 for x in combo])
-                        final_prob = min(0.99, raw_prob * (1 + (correlation_boost/100) if is_corr else 1))
+                        raw_win_prob = np.prod([x['Est Win %']/100 for x in combo])
+                        final_win_prob = min(0.99, raw_win_prob * (1 + (correlation_boost/100) if is_correlated else 1))
 
-                        kelly_rec = bankroll * kelly_criterion(dec_total, final_prob * 100, kelly_fraction)
+                        kelly_pct = kelly_criterion(dec_total, final_win_prob * 100, kelly_fraction)
                         
-                        # --- WAGER LOGIC ---
-                        my_wager = kelly_rec if auto_fill_kelly else default_unit
+                        # Wager Logic
+                        my_wager = kelly_rec = bankroll * kelly_pct
+                        if not auto_fill_kelly:
+                            my_wager = default_unit
                         
-                        # EV Check uses Kelly for filtering, but table uses My Wager
                         if min_ev_filter and kelly_rec <= 0: continue
                         
-                        # Calcs based on MY WAGER
                         payout = (dec_total * my_wager) - my_wager
-                        ev = (final_prob * payout) - ((1 - final_prob) * my_wager)
+                        ev = (final_win_prob * payout) - ((1 - final_win_prob) * my_wager)
 
                         valid_parlays.append({
                             "BET?": False,
                             "LEGS": [l['Leg Name'] for l in combo],
                             "ODDS": dec_total,
-                            "PROB": final_win_prob * 100 if 'final_win_prob' in locals() else final_prob * 100,
-                            "KELLY_REC": kelly_rec, # Stored reference
-                            "MY_WAGER": my_wager,   # Actual action
+                            "PROB": final_win_prob * 100,
+                            "KELLY_REC": kelly_rec,
+                            "MY_WAGER": my_wager,
                             "PAYOUT": payout,
                             "EV": ev,
                             "RAW_LEGS_DATA": combo,
-                            "BOOST": "🚀" if is_corr else ""
+                            "BOOST": "🚀" if is_correlated else ""
                         })
             st.session_state.generated_parlays = valid_parlays
             st.rerun()
 
-    # --- RESULTS DISPLAY ---
+    # --- RESULTS ---
     if len(st.session_state.generated_parlays) > 0:
         st.divider()
         st.markdown("### 📋 GENERATED_PORTFOLIO")
-        
         results_df = pd.DataFrame(st.session_state.generated_parlays)
         display_df = results_df.copy()
         display_df['LEGS'] = display_df['LEGS'].apply(lambda x: " + ".join(x))
@@ -356,8 +391,8 @@ with tab_build:
             column_config={
                 "BET?": st.column_config.CheckboxColumn("PLACED?", help="Check to mark as placed"),
                 "LEGS": st.column_config.TextColumn("PARLAY LEGS", width="large"),
-                "KELLY_REC": st.column_config.NumberColumn("KELLY (REC)", format="$%.2f", disabled=True), # Read Only
-                "MY_WAGER": st.column_config.NumberColumn("MY WAGER ($)", format="$%.2f", min_value=0.0), # Editable
+                "KELLY_REC": st.column_config.NumberColumn("KELLY (REC)", format="$%.2f", disabled=True),
+                "MY_WAGER": st.column_config.NumberColumn("MY WAGER ($)", format="$%.2f", min_value=0.0),
                 "PAYOUT": st.column_config.NumberColumn("PAYOUT ($)", format="$%.2f", disabled=True),
                 "EV": st.column_config.NumberColumn("EV ($)", format="$%.2f", disabled=True),
                 "ODDS": st.column_config.NumberColumn("DEC ODDS", format="%.2f", disabled=True),
@@ -383,7 +418,6 @@ with tab_build:
                 st.success(f"COMMITTED {len(placed)}")
             else: st.warning("NO BETS SELECTED")
 
-        # Copy Block
         active = [p for p in st.session_state.generated_parlays if p['BET?']]
         if active:
             st.divider()
@@ -456,7 +490,7 @@ with tab_hedge:
 
 # --- ANALYSIS ---
 with tab_analysis:
-    if not st.session_state.input_data.empty:
+    if isinstance(st.session_state.input_data, pd.DataFrame) and not st.session_state.input_data.empty:
         df = st.session_state.input_data[st.session_state.input_data['Active']==True].copy()
         if not df.empty:
             df['Imp'] = (1/df['Odds'].apply(american_to_decimal))*100
@@ -488,7 +522,7 @@ with tab_analysis:
 with tab_ledger:
     st.header("📜 LEDGER")
     if not st.session_state.bet_history.empty:
-        hist = st.data_editor(st.session_state.bet_history, num_rows="dynamic", use_container_width=True)
+        hist = st.data_editor(st.session_state.bet_history, num_rows="dynamic", width="stretch")
         # Update Logic
         for i, r in hist.iterrows():
             if r['Result'] == 'Won': hist.at[i, 'Profit'] = r['Payout']
