@@ -187,32 +187,40 @@ with st.sidebar:
         csv_hist = st.session_state.bet_history.to_csv(index=False).encode('utf-8')
         st.download_button("💾 SAVE_HISTORY (CSV)", csv_hist, "bet_ledger.csv", "text/csv")
 
-    uploaded_file = st.file_uploader("📂 LOAD_INPUTS", type=["csv"])
+       uploaded_file = st.file_uploader("📂 LOAD_INPUTS", type=["csv"])
     if uploaded_file is not None:
         try:
             loaded_df = pd.read_csv(uploaded_file)
             
-            # --- DATA SANITIZER (THE FIX FOR THE ERROR) ---
-            # Ensure required columns exist
+            # --- DATA SANITIZER ---
             if "Link Group" not in loaded_df.columns: loaded_df["Link Group"] = ""
             if "Excl Group" not in loaded_df.columns and "Group" in loaded_df.columns:
                 loaded_df.rename(columns={"Group": "Excl Group"}, inplace=True)
             
-            # Force String types for text columns (Replace NaN with "")
             loaded_df["Link Group"] = loaded_df["Link Group"].fillna("").astype(str)
             loaded_df["Excl Group"] = loaded_df["Excl Group"].fillna("").astype(str)
             loaded_df["Leg Name"] = loaded_df["Leg Name"].fillna("Unknown").astype(str)
             
-            # Force Boolean for Active
             if "Active" in loaded_df.columns:
                 loaded_df["Active"] = loaded_df["Active"].astype(bool)
             else:
                 loaded_df["Active"] = True
                 
-            # Force Numeric
             loaded_df["Odds"] = pd.to_numeric(loaded_df["Odds"], errors='coerce').fillna(-110)
             loaded_df["Conf (1-10)"] = pd.to_numeric(loaded_df["Conf (1-10)"], errors='coerce').fillna(5)
-            # -----------------------------------------------
+            # ----------------------
+
+            # 1. UPDATE THE DATA
+            st.session_state.input_data = loaded_df
+            
+            # 2. FORCE RESET THE WIDGET (The Magic Fix)
+            if "editor_widget" in st.session_state:
+                del st.session_state["editor_widget"]
+
+            st.success("DATABASE_RESTORED")
+            st.rerun()
+        except Exception as e: st.error(f"ERROR: {e}")
+
 
             st.session_state.input_data = loaded_df
             st.success("DATABASE_RESTORED")
