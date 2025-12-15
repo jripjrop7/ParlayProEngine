@@ -10,7 +10,7 @@ from datetime import datetime
 
 # --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="QUANT_PARLAY_ENGINE_V27", 
+    page_title="QUANT_PARLAY_ENGINE_V28", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -107,27 +107,12 @@ def fetch_fanduel_odds(api_key, sport_key):
 
 # --- CALLBACKS ---
 def update_main_data():
+    # Only update if the widget exists in session state
     if st.session_state.get(st.session_state.main_editor_key) is not None:
         st.session_state.input_data = st.session_state[st.session_state.main_editor_key]
 
-def update_portfolio_data():
-    key = st.session_state.portfolio_editor_key
-    if st.session_state.get(key) is not None:
-        edited_df = st.session_state[key]
-        for index, row in edited_df.iterrows():
-            if index < len(st.session_state.generated_parlays):
-                st.session_state.generated_parlays[index]['BET?'] = row['BET?']
-                
-                new_wager = row['MY_WAGER']
-                st.session_state.generated_parlays[index]['MY_WAGER'] = new_wager
-                
-                dec_odds = st.session_state.generated_parlays[index]['ODDS']
-                prob = st.session_state.generated_parlays[index]['PROB'] / 100
-                new_payout = (dec_odds * new_wager) - new_wager
-                new_ev = (prob * new_payout) - ((1 - prob) * new_wager)
-                
-                st.session_state.generated_parlays[index]['PAYOUT'] = new_payout
-                st.session_state.generated_parlays[index]['EV'] = new_ev
+# NOTE: Removed 'update_portfolio_data' callback entirely to fix the crash.
+# We now handle portfolio updates directly in the main flow.
 
 # --- INITIALIZE STATE ---
 if 'input_data' not in st.session_state:
@@ -137,25 +122,14 @@ if 'input_data' not in st.session_state:
         {"Active": True, "Excl Group": "", "Link Group": "KC", "Leg Name": "Mahomes 2+ TD", "Odds": -150, "Conf (1-10)": 9},
     ])
 
-# Dynamic Keys for Widgets
-if 'main_editor_key' not in st.session_state:
-    st.session_state.main_editor_key = str(uuid.uuid4())
-
-if 'portfolio_editor_key' not in st.session_state:
-    st.session_state.portfolio_editor_key = str(uuid.uuid4())
-
-# --- NEW: KEYS FOR UPLOADERS (THE FIX) ---
-if 'uploader_input_key' not in st.session_state:
-    st.session_state.uploader_input_key = str(uuid.uuid4())
-
-if 'uploader_hist_key' not in st.session_state:
-    st.session_state.uploader_hist_key = str(uuid.uuid4())
+# Dynamic Keys
+if 'main_editor_key' not in st.session_state: st.session_state.main_editor_key = str(uuid.uuid4())
+if 'portfolio_editor_key' not in st.session_state: st.session_state.portfolio_editor_key = str(uuid.uuid4())
+if 'uploader_input_key' not in st.session_state: st.session_state.uploader_input_key = str(uuid.uuid4())
+if 'uploader_hist_key' not in st.session_state: st.session_state.uploader_hist_key = str(uuid.uuid4())
     
-if 'generated_parlays' not in st.session_state:
-    st.session_state.generated_parlays = []
-    
-if 'bet_history' not in st.session_state:
-    st.session_state.bet_history = pd.DataFrame(columns=["Date", "Legs", "Odds", "Wager", "Payout", "Result", "Profit"])
+if 'generated_parlays' not in st.session_state: st.session_state.generated_parlays = []
+if 'bet_history' not in st.session_state: st.session_state.bet_history = pd.DataFrame(columns=["Date", "Legs", "Odds", "Wager", "Payout", "Result", "Profit"])
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -169,9 +143,7 @@ with st.sidebar:
             dec2 = american_to_decimal(fv_odds_2)
             imp1 = (1/dec1)
             imp2 = (1/dec2)
-            total_imp = imp1 + imp2 
-            true_prob1 = (imp1 / total_imp) * 100
-            st.metric("Side A True Win %", f"{true_prob1:.1f}%")
+            st.metric("Side A True Win %", f"{(imp1 / (imp1 + imp2) * 100):.1f}%")
 
     st.markdown("---")
     st.markdown("### > LIVE_DATA_FEED")
@@ -187,7 +159,6 @@ with st.sidebar:
                 if fetched:
                     st.session_state.input_data = pd.concat([st.session_state.input_data, pd.DataFrame(fetched)], ignore_index=True)
                     st.session_state.input_data.drop_duplicates(subset=['Leg Name'], keep='last', inplace=True)
-                    # Force Refresh
                     st.session_state.main_editor_key = str(uuid.uuid4())
                     st.success(f"ADDED {len(fetched)} LINES")
                     st.rerun()
@@ -203,13 +174,7 @@ with st.sidebar:
         csv_hist = st.session_state.bet_history.to_csv(index=False).encode('utf-8')
         st.download_button("💾 SAVE_HISTORY", csv_hist, "bet_ledger.csv", "text/csv")
 
-    # --- UPLOADER WITH DYNAMIC KEY (THE FIX) ---
-    uploaded_file = st.file_uploader(
-        "📂 LOAD_INPUTS", 
-        type=["csv"], 
-        key=st.session_state.uploader_input_key 
-    )
-    
+    uploaded_file = st.file_uploader("📂 LOAD_INPUTS", type=["csv"], key=st.session_state.uploader_input_key)
     if uploaded_file is not None:
         try:
             loaded_df = pd.read_csv(uploaded_file)
@@ -232,20 +197,11 @@ with st.sidebar:
             loaded_df["Conf (1-10)"] = pd.to_numeric(loaded_df["Conf (1-10)"], errors='coerce').fillna(5)
 
             st.session_state.input_data = loaded_df
-            
-            # FORCE WIDGET REFRESH
             st.session_state.main_editor_key = str(uuid.uuid4())
-            
-            # DO NOT RERUN HERE - Let the flow continue or it loops
             st.success("RESTORED! (Check Table)")
         except Exception as e: st.error(f"ERROR: {e}")
 
-    uploaded_hist = st.file_uploader(
-        "📂 LOAD_HISTORY", 
-        type=["csv"], 
-        key=st.session_state.uploader_hist_key 
-    )
-    
+    uploaded_hist = st.file_uploader("📂 LOAD_HISTORY", type=["csv"], key=st.session_state.uploader_hist_key)
     if uploaded_hist is not None:
         try:
             st.session_state.bet_history = pd.read_csv(uploaded_hist)
@@ -254,18 +210,12 @@ with st.sidebar:
 
     st.markdown("---")
     if st.button("🗑️ CLEAR_ALL"):
-        # 1. Reset Data
         st.session_state.input_data = pd.DataFrame(columns=["Active", "Excl Group", "Link Group", "Leg Name", "Odds", "Conf (1-10)"])
         st.session_state.generated_parlays = []
-        
-        # 2. Reset Widgets (Force tables to redraw)
         st.session_state.main_editor_key = str(uuid.uuid4())
         st.session_state.portfolio_editor_key = str(uuid.uuid4())
-        
-        # 3. RESET UPLOADERS (Force files to clear so they don't reload)
         st.session_state.uploader_input_key = str(uuid.uuid4())
         st.session_state.uploader_hist_key = str(uuid.uuid4())
-        
         st.rerun()
 
     st.markdown("### > BANKROLL")
@@ -291,7 +241,7 @@ with st.sidebar:
     max_combos = st.number_input("MAX_ITER", 1, 1000000, 5000, 100)
 
 # --- MAIN APP ---
-st.title("> QUANT_PARLAY_ENGINE_V27")
+st.title("> QUANT_PARLAY_ENGINE_V28")
 tab_build, tab_scenarios, tab_hedge, tab_analysis, tab_ledger = st.tabs(["🏗️ BUILDER", "🧪 SCENARIOS", "🛡️ HEDGE", "📊 ANALYSIS", "📜 LEDGER"])
 
 # --- BUILDER TAB ---
@@ -306,7 +256,6 @@ with tab_build:
         if st.button("ADD_PROP"):
             new_row = {"Active": True, "Excl Group": new_excl, "Link Group": new_link, "Leg Name": new_prop_name, "Odds": new_odds, "Conf (1-10)": new_conf}
             st.session_state.input_data = pd.concat([st.session_state.input_data, pd.DataFrame([new_row])], ignore_index=True)
-            # Force refresh so new row appears immediately
             st.session_state.main_editor_key = str(uuid.uuid4())
             st.success("ADDED")
             st.rerun()
@@ -320,7 +269,6 @@ with tab_build:
             st.success(f"CLONED {len(clones)}")
             st.rerun()
 
-    # Safety check
     if not isinstance(st.session_state.input_data, pd.DataFrame):
          st.session_state.input_data = pd.DataFrame(columns=["Active", "Excl Group", "Link Group", "Leg Name", "Odds", "Conf (1-10)"])
 
@@ -405,7 +353,7 @@ with tab_build:
             st.session_state.portfolio_editor_key = str(uuid.uuid4())
             st.rerun()
 
-    # --- RESULTS DISPLAY ---
+    # --- RESULTS DISPLAY (CRASH FIX: DIRECT RETURN) ---
     if len(st.session_state.generated_parlays) > 0:
         st.divider()
         st.markdown("### 📋 GENERATED_PORTFOLIO")
@@ -414,7 +362,8 @@ with tab_build:
         display_df = results_df.copy()
         display_df['LEGS'] = display_df['LEGS'].apply(lambda x: " + ".join(x))
         
-        st.data_editor(
+        # Capture the edited dataframe directly
+        edited_portfolio = st.data_editor(
             display_df,
             column_config={
                 "BET?": st.column_config.CheckboxColumn("PLACED?", help="Check to mark as placed"),
@@ -428,9 +377,37 @@ with tab_build:
                 "RAW_LEGS_DATA": None 
             },
             hide_index=True, width="stretch", 
-            key=st.session_state.portfolio_editor_key, 
-            on_change=update_portfolio_data 
+            key=st.session_state.portfolio_editor_key
         )
+        
+        # --- SYNC EDITS BACK TO STATE (THE FIX) ---
+        # We iterate the returned dataframe and update our list.
+        # This runs on every re-run where the user changed something.
+        needs_rerun = False
+        for index, row in edited_portfolio.iterrows():
+            if index < len(st.session_state.generated_parlays):
+                # Check for changes to prevent unnecessary processing (though simple assignment is cheap)
+                old_wager = st.session_state.generated_parlays[index]['MY_WAGER']
+                new_wager = row['MY_WAGER']
+                old_bet = st.session_state.generated_parlays[index]['BET?']
+                new_bet = row['BET?']
+                
+                if old_wager != new_wager or old_bet != new_bet:
+                    st.session_state.generated_parlays[index]['BET?'] = new_bet
+                    st.session_state.generated_parlays[index]['MY_WAGER'] = new_wager
+                    
+                    # Recalc logic
+                    dec_odds = st.session_state.generated_parlays[index]['ODDS']
+                    prob = st.session_state.generated_parlays[index]['PROB'] / 100
+                    new_payout = (dec_odds * new_wager) - new_wager
+                    new_ev = (prob * new_payout) - ((1 - prob) * new_wager)
+                    
+                    st.session_state.generated_parlays[index]['PAYOUT'] = new_payout
+                    st.session_state.generated_parlays[index]['EV'] = new_ev
+                    needs_rerun = True
+        
+        if needs_rerun:
+            st.rerun()
 
         st.write("")
         if st.button("💾 COMMIT_PLACED_TO_LEDGER"):
@@ -553,12 +530,14 @@ with tab_ledger:
     st.header("📜 LEDGER")
     if not st.session_state.bet_history.empty:
         hist = st.data_editor(st.session_state.bet_history, num_rows="dynamic", width="stretch")
+        
         if not hist.equals(st.session_state.bet_history):
             updated_history = hist.copy()
             for i, r in updated_history.iterrows():
                 if r['Result'] == 'Won': updated_history.at[i, 'Profit'] = r['Payout']
                 elif r['Result'] == 'Lost': updated_history.at[i, 'Profit'] = -r['Wager']
                 else: updated_history.at[i, 'Profit'] = 0.0
+            
             st.session_state.bet_history = updated_history
             st.rerun()
         
