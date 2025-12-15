@@ -11,7 +11,7 @@ from datetime import datetime
 
 # --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="QUANT_PARLAY_ENGINE_V30", 
+    page_title="QUANT_PARLAY_ENGINE_V31", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -163,9 +163,11 @@ with st.sidebar:
             loaded_df["Active"] = loaded_df["Active"].astype(bool) if "Active" in loaded_df.columns else True
             loaded_df["Odds"] = pd.to_numeric(loaded_df["Odds"], errors='coerce').fillna(-110)
             loaded_df["Conf (1-10)"] = pd.to_numeric(loaded_df["Conf (1-10)"], errors='coerce').fillna(5)
+            
             st.session_state.input_data = loaded_df
             st.session_state.main_editor_key = str(uuid.uuid4())
-            st.success("RESTORED!"); st.rerun()
+            st.success("RESTORED!")
+            # REMOVED st.rerun() TO PREVENT INFINITE LOOP
         except Exception as e: st.error(f"ERROR: {e}")
 
     uploaded_hist = st.file_uploader("📂 LOAD_HISTORY", type=["csv"], key=st.session_state.uploader_hist_key)
@@ -173,6 +175,7 @@ with st.sidebar:
         try:
             st.session_state.bet_history = pd.read_csv(uploaded_hist)
             st.success("LEDGER RESTORED")
+            # REMOVED st.rerun() TO PREVENT INFINITE LOOP
         except: pass
 
     st.markdown("---")
@@ -206,7 +209,7 @@ with st.sidebar:
     max_combos = st.number_input("TARGET_TICKETS", 1, 100000, 2000, 500)
 
 # --- MAIN APP ---
-st.title("> QUANT_PARLAY_ENGINE_V30 (FULL)")
+st.title("> QUANT_PARLAY_ENGINE_V31 (STABLE)")
 tab_build, tab_scenarios, tab_hedge, tab_analysis, tab_ledger = st.tabs(["🏗️ BUILDER", "🧪 SCENARIOS", "🛡️ HEDGE", "📊 ANALYSIS", "📜 LEDGER"])
 
 # --- BUILDER ---
@@ -362,7 +365,7 @@ with tab_build:
         st.divider()
         st.markdown("### 📋 GENERATED_PORTFOLIO")
         
-        # --- SORTING (NEW) ---
+        # --- SORTING ---
         col_sort, col_dummy = st.columns([1, 4])
         with col_sort:
             sort_by = st.selectbox("SORT BY", ["EV", "ODDS", "PROB", "PAYOUT"], index=0)
@@ -370,7 +373,6 @@ with tab_build:
         results_df = pd.DataFrame(st.session_state.generated_parlays)
         # Apply Sorting
         results_df = results_df.sort_values(by=sort_by, ascending=False).reset_index(drop=True)
-        # Update session state to match sort order (important for syncing)
         st.session_state.generated_parlays = results_df.to_dict('records')
         
         display_df = results_df.copy()
