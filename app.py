@@ -6,11 +6,12 @@ import altair as alt
 import requests
 import random
 import uuid
+import math
 from datetime import datetime
 
 # --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="QUANT_PARLAY_ENGINE_V28", 
+    page_title="QUANT_PARLAY_ENGINE_V29", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -69,6 +70,8 @@ def kelly_criterion(decimal_odds, win_prob_percent, fractional_kelly=0.25):
     kelly_perc = (b * p - q) / b
     return max(0, kelly_perc * fractional_kelly)
 
+# --- CACHED API FETCH (ROBUSTNESS) ---
+@st.cache_data(ttl=600) # Cache for 10 mins to prevent accidental spam
 def fetch_fanduel_odds(api_key, sport_key):
     url = f'https://api.the-odds-api.com/v4/sports/{sport_key}/odds'
     params = {
@@ -102,17 +105,12 @@ def fetch_fanduel_odds(api_key, sport_key):
                                 })
         return new_legs
     except Exception as e:
-        st.error(f"API Error: {e}")
         return []
 
 # --- CALLBACKS ---
 def update_main_data():
-    # Only update if the widget exists in session state
     if st.session_state.get(st.session_state.main_editor_key) is not None:
         st.session_state.input_data = st.session_state[st.session_state.main_editor_key]
-
-# NOTE: Removed 'update_portfolio_data' callback entirely to fix the crash.
-# We now handle portfolio updates directly in the main flow.
 
 # --- INITIALIZE STATE ---
 if 'input_data' not in st.session_state:
@@ -122,7 +120,6 @@ if 'input_data' not in st.session_state:
         {"Active": True, "Excl Group": "", "Link Group": "KC", "Leg Name": "Mahomes 2+ TD", "Odds": -150, "Conf (1-10)": 9},
     ])
 
-# Dynamic Keys
 if 'main_editor_key' not in st.session_state: st.session_state.main_editor_key = str(uuid.uuid4())
 if 'portfolio_editor_key' not in st.session_state: st.session_state.portfolio_editor_key = str(uuid.uuid4())
 if 'uploader_input_key' not in st.session_state: st.session_state.uploader_input_key = str(uuid.uuid4())
@@ -162,6 +159,8 @@ with st.sidebar:
                     st.session_state.main_editor_key = str(uuid.uuid4())
                     st.success(f"ADDED {len(fetched)} LINES")
                     st.rerun()
+                else:
+                    st.error("API Fetch Failed or No Data")
 
     st.markdown("---")
     st.markdown("### > DATA_PERSISTENCE")
@@ -238,10 +237,11 @@ with st.sidebar:
     target_min_odds = st.number_input("MIN_ODDS", 100, 100000, 100)
     target_max_odds = st.number_input("MAX_ODDS", 100, 500000, 10000)
     min_ev_filter = st.checkbox("FILTER_NEG_EV", value=True)
-    max_combos = st.number_input("MAX_ITER", 1, 1000000, 5000, 100)
+    # Changed default to be higher for random sampling, but slider for control
+    max_combos = st.number_input("TARGET_TICKETS", 1, 100000, 2000, 500, help="How many valid parlays to generate before stopping.")
 
 # --- MAIN APP ---
-st.title("> QUANT_PARLAY_ENGINE_V28")
+st.title("> QUANT_PARLAY_ENGINE_V29 (SPEED)")
 tab_build, tab_scenarios, tab_hedge, tab_analysis, tab_ledger = st.tabs(["🏗️ BUILDER", "🧪 SCENARIOS", "🛡️ HEDGE", "📊 ANALYSIS", "📜 LEDGER"])
 
 # --- BUILDER TAB ---
@@ -272,7 +272,6 @@ with tab_build:
     if not isinstance(st.session_state.input_data, pd.DataFrame):
          st.session_state.input_data = pd.DataFrame(columns=["Active", "Excl Group", "Link Group", "Leg Name", "Odds", "Conf (1-10)"])
 
-    # --- MAIN TABLE ---
     st.data_editor(
         st.session_state.input_data, 
         column_config={
@@ -299,19 +298,42 @@ with tab_build:
         st.stop()
 
     st.write("") 
+    
+    # --- SMART GENERATOR LOGIC ---
     if st.button(">>> GENERATE_OPTIMIZED_HEDGE"):
         if active_df.empty: st.error("NO_ACTIVE_LEGS")
         else:
             legs_list = active_df.to_dict('records')
             valid_parlays = []
-            combo_count = 0
-            stop = False
+            
             min_dec, max_dec = american_to_decimal(target_min_odds), american_to_decimal(target_max_odds)
-
-            with st.spinner("PROCESSING..."):
+            
+            # 1. Determine Complexity
+            total_active = len(legs_list)
+            # Safe estimate of combinations nCr
+            complexity = 0
+            for r in range(min_legs, max_legs + 1):
+                if r <= total_active:
+                    complexity += math.comb(total_active, r)
+            
+            # 2. Choose Engine
+            mode = "EXHAUSTIVE"
+            if complexity > 1_000_000: # Threshold for switching to Monte Carlo
+                mode = "MONTE_CARLO"
+                st.caption(f"⚠️ HIGH COMPLEXITY ({complexity:,} combinations). Switched to Smart Sampling Mode.")
+            
+            progress_bar = st.progress(0)
+            
+            # --- ENGINE: EXHAUSTIVE ---
+            if mode == "EXHAUSTIVE":
+                combo_count = 0
+                stop = False
                 for r in range(min_legs, max_legs + 1):
                     if stop: break
                     for combo in itertools.combinations(legs_list, r):
+                        if len(valid_parlays) >= max_combos: stop = True; break
+                        
+                        # Logic Checks
                         excl = [str(x['Excl Group']) for x in combo if str(x['Excl Group']).strip()]
                         if len(excl) != len(set(excl)): continue
 
@@ -320,9 +342,6 @@ with tab_build:
                             links = [str(x['Link Group']) for x in combo if str(x['Link Group']).strip()]
                             if len(links) != len(set(links)): is_corr = True
                         
-                        combo_count += 1
-                        if combo_count > max_combos: stop = True; break
-
                         dec_total = np.prod([x['Decimal'] for x in combo])
                         if not (min_dec <= dec_total <= max_dec): continue
 
@@ -349,11 +368,76 @@ with tab_build:
                             "RAW_LEGS_DATA": combo,
                             "BOOST": "🚀" if is_corr else ""
                         })
+            
+            # --- ENGINE: MONTE CARLO (SMART SAMPLER) ---
+            else:
+                attempts = 0
+                max_attempts = max_combos * 50 # Give up if we can't find valid ones
+                
+                while len(valid_parlays) < max_combos and attempts < max_attempts:
+                    attempts += 1
+                    if attempts % 1000 == 0: progress_bar.progress(min(1.0, len(valid_parlays) / max_combos))
+                    
+                    # Random size
+                    r = random.randint(min_legs, max_legs)
+                    if r > total_active: continue
+                    
+                    # Random legs
+                    combo = random.sample(legs_list, r)
+                    
+                    # Logic Checks (Same as above)
+                    excl = [str(x['Excl Group']) for x in combo if str(x['Excl Group']).strip()]
+                    if len(excl) != len(set(excl)): continue
+
+                    is_corr = False
+                    if sgp_mode:
+                        links = [str(x['Link Group']) for x in combo if str(x['Link Group']).strip()]
+                        if len(links) != len(set(links)): is_corr = True
+                    
+                    dec_total = np.prod([x['Decimal'] for x in combo])
+                    if not (min_dec <= dec_total <= max_dec): continue
+
+                    raw_prob = np.prod([x['Est Win %']/100 for x in combo])
+                    final_prob = min(0.99, raw_prob * (1 + (correlation_boost/100) if is_corr else 1))
+
+                    kelly_rec = bankroll * kelly_criterion(dec_total, final_prob * 100, kelly_fraction)
+                    my_wager = kelly_rec if auto_fill_kelly else default_unit
+                    
+                    if min_ev_filter and kelly_rec <= 0: continue
+                    
+                    payout = (dec_total * my_wager) - my_wager
+                    ev = (final_prob * payout) - ((1 - final_prob) * my_wager)
+                    
+                    # Store (Avoid Duplicates if possible)
+                    # Simple duplicate check by stringifying legs
+                    valid_parlays.append({
+                        "BET?": False,
+                        "LEGS": [l['Leg Name'] for l in combo],
+                        "ODDS": dec_total,
+                        "PROB": final_prob * 100,
+                        "KELLY_REC": kelly_rec,
+                        "MY_WAGER": my_wager,
+                        "PAYOUT": payout,
+                        "EV": ev,
+                        "RAW_LEGS_DATA": combo,
+                        "BOOST": "🚀" if is_corr else ""
+                    })
+
+            progress_bar.empty()
+            # Remove potential duplicates from Monte Carlo
+            # Convert list of dicts to dataframe to drop duplicates easily
+            if valid_parlays:
+                temp_df = pd.DataFrame(valid_parlays)
+                # Convert legs list to string tuple for hashing
+                temp_df['leg_hash'] = temp_df['LEGS'].apply(lambda x: tuple(sorted(x)))
+                temp_df = temp_df.drop_duplicates(subset=['leg_hash']).drop(columns=['leg_hash'])
+                valid_parlays = temp_df.to_dict('records')
+
             st.session_state.generated_parlays = valid_parlays
             st.session_state.portfolio_editor_key = str(uuid.uuid4())
             st.rerun()
 
-    # --- RESULTS DISPLAY (CRASH FIX: DIRECT RETURN) ---
+    # --- RESULTS DISPLAY ---
     if len(st.session_state.generated_parlays) > 0:
         st.divider()
         st.markdown("### 📋 GENERATED_PORTFOLIO")
@@ -362,7 +446,6 @@ with tab_build:
         display_df = results_df.copy()
         display_df['LEGS'] = display_df['LEGS'].apply(lambda x: " + ".join(x))
         
-        # Capture the edited dataframe directly
         edited_portfolio = st.data_editor(
             display_df,
             column_config={
@@ -380,13 +463,10 @@ with tab_build:
             key=st.session_state.portfolio_editor_key
         )
         
-        # --- SYNC EDITS BACK TO STATE (THE FIX) ---
-        # We iterate the returned dataframe and update our list.
-        # This runs on every re-run where the user changed something.
+        # Sync edits
         needs_rerun = False
         for index, row in edited_portfolio.iterrows():
             if index < len(st.session_state.generated_parlays):
-                # Check for changes to prevent unnecessary processing (though simple assignment is cheap)
                 old_wager = st.session_state.generated_parlays[index]['MY_WAGER']
                 new_wager = row['MY_WAGER']
                 old_bet = st.session_state.generated_parlays[index]['BET?']
@@ -396,7 +476,6 @@ with tab_build:
                     st.session_state.generated_parlays[index]['BET?'] = new_bet
                     st.session_state.generated_parlays[index]['MY_WAGER'] = new_wager
                     
-                    # Recalc logic
                     dec_odds = st.session_state.generated_parlays[index]['ODDS']
                     prob = st.session_state.generated_parlays[index]['PROB'] / 100
                     new_payout = (dec_odds * new_wager) - new_wager
